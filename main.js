@@ -15,8 +15,11 @@
   scene.background = new THREE.Color(0x10151a);
 
   const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1000);
-  // pulled back further and raised to see the whole real-size (105x68) pitch by default
-  camera.position.set(10, 12, 22);
+  // pulled back further and raised to see the whole real-size (105x68) pitch by default.
+  // Looking further down-field (+x) than the origin (see controls.target below) shifts
+  // the origin/player toward the LEFT of the viewport instead of dead-center, leaving
+  // more visible room on the right for the ball and its kicked flight path.
+  camera.position.set(21, 12, 22);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   viewport.appendChild(renderer.domElement);
@@ -30,7 +33,9 @@
   window.addEventListener("resize", resize);
 
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.target.set(5, 1, 0);
+  // Aim further down-field (x=16) than the player's origin (x=0) — this is what
+  // pushes the origin/player toward the left side of the frame (see camera comment above).
+  controls.target.set(16, 1, 0);
   controls.update();
 
   // lights
@@ -68,9 +73,9 @@
   const fieldMaxY = fieldH / 2;
 
   const axisLabels = []; // { el, worldPos: THREE.Vector3 }
-  function addAxisLabel(physX, physY, text) {
+  function addAxisLabel(physX, physY, text, extraClass) {
     const el = document.createElement("div");
-    el.className = "axisLabel";
+    el.className = extraClass ? `axisLabel ${extraClass}` : "axisLabel";
     el.textContent = text;
     labelLayer.appendChild(el);
     axisLabels.push({ el, worldPos: new THREE.Vector3(physX, 0.05, physY) });
@@ -85,7 +90,10 @@
     if (y === 0) continue; // avoid overlapping the x=... label at the origin corner
     addAxisLabel(fieldMinX, y, `y=${y}`);
   }
-  addAxisLabel(0, 0, "origin (0,0)");
+  // Origin sits exactly at the player's base (0,0), so its label would
+  // otherwise overlap the player/ball — nudge it to the left via a
+  // dedicated CSS class instead of centering it on the anchor point.
+  addAxisLabel(0, 0, "origin (0,0)", "originLabel");
   // explicit goal-line markers (52.5 = rcssserver's own PITCH_LENGTH/2)
   addAxisLabel(52.5, fieldMinY, "x=52.5 (goal)");
   addAxisLabel(-52.5, fieldMinY, "x=-52.5 (goal)");

@@ -26,6 +26,14 @@ html, body { margin: 0; padding: 0; height: 100%; background: #10151a; color: #e
   white-space: nowrap;
 }
 
+.originLabel {
+  /* Overrides .axisLabel's centered (-50%,-50%) transform: the origin's world
+     position (0,0) sits exactly at the player's feet, so centering the label
+     there overlaps the player/ball. Instead, anchor its right edge just to
+     the LEFT of that point, clearing both. */
+  transform: translate(calc(-100% - 24px), -50%) !important;
+}
+
 .mouseCoord {
   position: absolute;
   transform: translate(12px, 12px);
@@ -41,7 +49,10 @@ html, body { margin: 0; padding: 0; height: 100%; background: #10151a; color: #e
 
 .ballCoord {
   position: absolute;
-  transform: translate(-50%, -130%);
+  /* Anchored to the ball's screen position, then pushed up-and-right so the
+     label sits at the ball's top-right instead of directly overlapping it
+     (was centered directly above, transform: translate(-50%, -130%)). */
+  transform: translate(14px, -190%);
   font-family: Consolas, monospace;
   font-size: 12px;
   color: #10151a;
