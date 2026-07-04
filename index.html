@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>3D Kick Lab — rcssserver ball-flight sandbox</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="viewport">
+      <div id="labelLayer">
+        <div id="mouseCoordLabel" class="mouseCoord"></div>
+        <div id="ballCoordLabel" class="ballCoord"></div>
+      </div>
+    </div>
+
+    <div id="panel">
+      <h1>3D Kick Lab</h1>
+      <p class="subtitle">Prototype sandbox for a 3D ball-flight extension to rcssserver.</p>
+
+      <div class="section">
+        <h2>Playback</h2>
+        <div class="row buttons">
+          <button id="btnStep">Step ⏭</button>
+          <button id="btnPlay">Play ▶</button>
+          <button id="btnPause" disabled>Pause ⏸</button>
+          <button id="btnReset">Reset ⟲</button>
+        </div>
+        <div class="row">
+          <label>Speed <span id="speedVal">1x</span></label>
+          <input type="range" id="speed" min="0.25" max="8" step="0.25" value="1" />
+        </div>
+        <div class="readout">
+          <div>Cycle: <span id="roCycle">0</span> &nbsp; Time: <span id="roTime">0.00</span>s</div>
+          <div>Ball pos (x,y,z): <span id="roPos">-</span></div>
+          <div>Ball vel (vx,vy,vz): <span id="roVel">-</span></div>
+          <div>Speed: <span id="roSpeed">-</span> &nbsp; Max height: <span id="roMaxH">-</span></div>
+          <div id="roKickable" class="kickable">Kickable: -</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Kick command</h2>
+        <div class="row" id="row_power">
+          <label>Power <span id="powerVal">100</span></label>
+          <input type="range" id="power" min="0" max="100" step="1" value="100" />
+        </div>
+        <div class="row" id="row_dir">
+          <label>Direction (deg, relative to body) <span id="dirVal">0</span></label>
+          <input type="range" id="dir" min="-180" max="180" step="1" value="0" />
+        </div>
+        <div class="row" id="row_loft">
+          <label>Loft (deg, 0=grounder, 90=straight up) <span id="loftVal">60</span></label>
+          <input type="range" id="loft" min="0" max="90" step="1" value="60" />
+        </div>
+        <div class="row buttons">
+          <button id="btnKick">Kick ⚽</button>
+        </div>
+        <div class="readout" id="kickInfo">No kick yet.</div>
+      </div>
+
+      <div class="section">
+        <h2>Ball initial state (applies on Reset)</h2>
+        <div class="grid3">
+          <label>x <input type="number" id="init_x" step="0.1" /></label>
+          <label>y <input type="number" id="init_y" step="0.1" /></label>
+          <label>z <input type="number" id="init_z" step="0.1" value="0" /></label>
+          <label>vx <input type="number" id="init_vx" step="0.1" value="0" /></label>
+          <label>vy <input type="number" id="init_vy" step="0.1" value="0" /></label>
+          <label>vz <input type="number" id="init_vz" step="0.1" value="0" /></label>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Physics parameters</h2>
+        <div id="paramSliders"></div>
+      </div>
+
+      <div class="section">
+        <h2>Event log</h2>
+        <div class="row buttons">
+          <button id="btnExportLog">Export trace (.json) ⬇</button>
+        </div>
+        <div id="eventLog" class="eventlog"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="physics.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

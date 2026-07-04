@@ -147,6 +147,37 @@ Since the simulation runs in-browser, there's no automatic server-side log
    useful for quickly A/B-testing a parameter change without opening a
    browser at all.
 
+## "!" info buttons — understand what each variable does
+
+Every kick parameter (Power/Direction/Loft) and every physics parameter in the
+"Physics parameters" panel now has a small **"!"** button next to its label.
+Click it to toggle a short explanation (right in the panel, no popup) of:
+
+- What the variable represents (and its rcssserver equivalent constant, where
+  one exists — e.g. `kick_power_rate`, `ball_decay`, `ball_speed_max`).
+- **How changing it affects the simulation** — e.g. *"loft costs power: at
+  loft=90 with loft_power_cost=0.4 you only keep 60% of eff_power"*, or
+  *"gravity is per-cycle, NOT real 9.8 m/s² — setting it too high reproduces
+  the 'ball barely leaves the ground' bug"*.
+
+Click the button again to collapse the explanation. All descriptions live in
+one `DESCRIPTIONS` map in [main.js](main.js) — easy to extend if you add new
+parameters later.
+
+## New defaults (tuned for a realistic first-look arc)
+
+| Parameter | Old default | New default |
+|---|---|---|
+| Power | 60 | **100** |
+| Loft | 30° | **60°** |
+| Ball initial x | ~0.74 (kickable-edge distance) | **0.3** |
+| Gravity | 0.25 | **0.15** |
+
+With these defaults, hitting **Kick** immediately now produces a strong,
+high, floaty lob (peak height ≈ 6.75m at cycle 10, verified with
+`node debug_trace.js 100 0 60 60`) — a clearer "yes, this really flies"
+demo than the previous more modest defaults.
+
 ## Real pitch dimensions and goal distance
 
 The field/goal geometry now matches rcssserver's actual `ServerParam` constants
