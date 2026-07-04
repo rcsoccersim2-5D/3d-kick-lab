@@ -443,6 +443,7 @@
     player_reach_height: "NEW parameter: maximum ball z at which the ball is still considered kickable/headable (used in isBallKickable() alongside the normal 2D kickable-circle test). Lower it to simulate 'the ball flew over the player's head, they can't reach it'.",
     height_power_cost: "NEW parameter: fraction of eff_power lost as the ball's height approaches player_reach_height (0 = ball on the ground costs nothing extra, 1 = a ball right at the reach-height cutoff loses ALL power). Mirrors the existing angle/distance power penalties - previously ball height had NO effect on kick power at all, only a binary reach cutoff. Set to 0 to make height free again (old behavior); raise it to make headers/volleys noticeably weaker than grounders.",
     dt: "Seconds represented by ONE simulation cycle (rcssserver's cycle = 0.1s = 100ms, matched here by default). Only affects real-time playback pacing (how fast Play advances cycles per wall-clock second) - it is NOT used inside the physics formulas themselves (pos/vel integration is purely per-cycle, matching rcssserver's own convention).",
+    precise_bounce_timing: "EXPERIMENTAL toggle. OFF (default, matches original behavior): a cycle that would carry the ball below z=0 just clamps pos.z straight to 0 and bounces from there, discarding whatever fraction of that cycle's fall happened after the true ground-crossing instant. ON: step() finds the exact fractional point within the cycle where z actually crosses 0 (linear interpolation), bounces the velocity there, then continues moving for the REMAINING fraction of the cycle with the reflected velocity - like mirroring the tail of the fall back upward instead of chopping it off. Turn this on/off and compare trajectories (especially at low gravity / large per-cycle falls) to A/B test whether it visibly changes bounce placement.",
   };
 
   // Defaults used by the per-variable AND "reset all" buttons. Kick command
@@ -526,6 +527,68 @@
   };
 
   const sliderHost = $("paramSliders");
+
+  // ---- boolean toggle parameters (checkbox, not a range slider) ----
+  // Separate from PARAM_RANGES/the range-slider loop below since a checkbox
+  // has no min/max/step and uses `.checked` instead of `.value`. Add new
+  // boolean physics params to BOOL_PARAMS (plus a DEFAULT_PARAMS entry and a
+  // DESCRIPTIONS entry above) rather than wiring one-off UI for each.
+  const BOOL_PARAMS = ["precise_bounce_timing"];
+  BOOL_PARAMS.forEach((key) => {
+    const defaultValue = window.DEFAULT_PARAMS[key];
+    const row = document.createElement("div");
+    row.className = "row";
+    const label = document.createElement("label");
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = key;
+    label.appendChild(nameSpan);
+
+    const rightGroup = document.createElement("span");
+    rightGroup.className = "labelControls";
+
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = !!params[key];
+    input.oninput = () => {
+      params[key] = input.checked;
+      sim.params[key] = input.checked;
+    };
+    rightGroup.appendChild(input);
+
+    const btn = document.createElement("button");
+    btn.className = "infoBtn";
+    btn.type = "button";
+    btn.textContent = "!";
+    btn.title = "What does this do?";
+    rightGroup.appendChild(btn);
+
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "infoBtn resetBtn";
+    resetBtn.type = "button";
+    resetBtn.textContent = "↺";
+    resetBtn.title = `Reset to default (${defaultValue})`;
+    resetBtn.onclick = () => {
+      input.checked = defaultValue;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    rightGroup.appendChild(resetBtn);
+
+    label.appendChild(rightGroup);
+    row.appendChild(label);
+
+    const desc = document.createElement("div");
+    desc.className = "paramDesc";
+    desc.textContent = DESCRIPTIONS[key] || "No description available.";
+    row.appendChild(desc);
+    btn.onclick = () => {
+      const open = desc.classList.toggle("open");
+      btn.classList.toggle("active", open);
+    };
+
+    sliderHost.appendChild(row);
+    resettableInputs.push({ input, defaultValue, isCheckbox: true });
+  });
+
   Object.keys(PARAM_RANGES).forEach((key) => {
     const [min, max, step] = PARAM_RANGES[key];
     const row = document.createElement("div");
@@ -569,8 +632,8 @@
   // (does NOT touch ball position/velocity - that's the separate "Reset ⟲" button
   // in the Playback section, which resets the simulation state instead).
   $("btnResetAllParams").onclick = () => {
-    resettableInputs.forEach(({ input, defaultValue }) => {
-      input.value = defaultValue;
+    resettableInputs.forEach(({ input, defaultValue, isCheckbox }) => {
+      if (isCheckbox) input.checked = defaultValue; else input.value = defaultValue;
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
   };

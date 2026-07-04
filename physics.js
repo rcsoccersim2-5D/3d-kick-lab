@@ -61,6 +61,19 @@ const DEFAULT_PARAMS = {
                             // previously ball height had ZERO effect on power, only a binary reach cutoff)
 
   dt: 0.1,                  // seconds simulated per "cycle" (matches rcssserver's 100ms cycle)
+
+  // EXPERIMENTAL (default OFF, toggle in the lab UI to A/B test): when false
+  // (current/original behavior), a cycle that would carry the ball below
+  // z=0 just clamps pos.z straight to 0 and bounces from there - silently
+  // discarding whatever fraction of that cycle's fall happened AFTER the
+  // true ground-crossing instant. When true, step() instead finds the exact
+  // fractional point within the cycle where z would have crossed 0 (linear
+  // interpolation - a cycle moves the ball at a constant vel.z), bounces the
+  // velocity at that instant, then continues moving for the REMAINING
+  // fraction of the cycle with the reflected velocity - like "mirroring"
+  // the tail end of the fall back upward instead of chopping it off. See
+  // step() for the implementation.
+  precise_bounce_timing: false,
 };
 
 class KickLabPhysics {
@@ -284,10 +297,45 @@ class KickLabPhysics {
     // integrate position — per-cycle, matching rcssserver's `pos += vel`
     b.pos.x += b.vel.x;
     b.pos.y += b.vel.y;
-    if (!resting) b.pos.z += b.vel.z;
 
-    // ground collision / bounce
-    if (b.pos.z <= 0) {
+    // `bounced` tracks whether the precise-timing branch below already
+    // resolved this cycle's ground collision (bounced vel.z/pos.z set) so
+    // the existing post-hoc "ground collision / bounce" block further down
+    // can skip re-processing it.
+    let bounced = false;
+    if (!resting) {
+      const z0 = b.pos.z;
+      const newZ = z0 + b.vel.z;
+      if (p.precise_bounce_timing && z0 > 0 && newZ <= 0) {
+        // EXPERIMENTAL "mirror" bounce (see precise_bounce_timing in
+        // DEFAULT_PARAMS): find the fraction of THIS cycle at which pos.z
+        // actually crosses 0 (linear interpolation - within one cycle the
+        // ball moves at the constant post-gravity vel.z), bounce velocity
+        // at that exact instant, then continue moving for the remaining
+        // fraction of the cycle with the reflected velocity, instead of
+        // jumping straight to z=0 and discarding the rest of the cycle's
+        // fall/travel.
+        const frac = z0 / (z0 - newZ); // 0..1, fraction of the cycle before impact
+        const vzImpact = b.vel.z;      // velocity at the moment of impact
+        const candidate = -vzImpact * p.ball_bounce_restitution;
+        if (Math.abs(candidate) < p.bounce_stop_speed) {
+          b.vel.z = 0;
+          b.pos.z = 0;
+          if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground." });
+        } else {
+          b.vel.z = candidate;
+          b.pos.z = Math.max(0, b.vel.z * (1 - frac));
+          this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)} (mirrored mid-step)` });
+        }
+        bounced = true;
+      } else {
+        b.pos.z = newZ;
+      }
+    }
+
+    // ground collision / bounce (skipped if the precise-timing branch above
+    // already resolved this cycle's bounce)
+    if (!bounced && b.pos.z <= 0) {
       b.pos.z = 0;
       // Check the PREDICTED post-bounce velocity against bounce_stop_speed,
       // not the incoming fall velocity. Checking the incoming velocity is
