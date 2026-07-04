@@ -59,7 +59,7 @@ const DEFAULT_PARAMS = {
   // touches vx/vy at all); higher = harder bounces bleed off proportionally more
   // horizontal speed on impact, matching the physical intuition that a ball hitting
   // the ground hard loses energy on ALL axes, not just vertically.
-  bounce_friction_mu: 0.3,
+  ball_bounce_friction: 0.3,
 
   loft_power_cost: 0.4,     // fraction of power "spent" lifting the ball at 90 deg loft
   air_decay: 0.999,         // xy friction while ball is AIRBORNE (near-zero air resistance)
@@ -286,10 +286,10 @@ class KickLabPhysics {
     const p = this.params;
     const b = this.ball;
     const normalImpulse = Math.abs(vzImpact) - Math.abs(postBounceVz);
-    if (normalImpulse <= 0 || p.bounce_friction_mu <= 0) return;
+    if (normalImpulse <= 0 || p.ball_bounce_friction <= 0) return;
     const speedXY = Math.hypot(b.vel.x, b.vel.y);
     if (speedXY <= 1e-9) return;
-    const maxLoss = p.bounce_friction_mu * normalImpulse; // Coulomb cap: F_friction <= mu * F_normal
+    const maxLoss = p.ball_bounce_friction * normalImpulse; // Coulomb cap: F_friction <= mu * F_normal
     const loss = Math.min(maxLoss, speedXY);              // friction can't reverse the tangential velocity
     const scale = (speedXY - loss) / speedXY;
     b.vel.x *= scale;

@@ -66,12 +66,12 @@ if pos.z <= 0:                                          # NEW: bounce (see preci
     vzImpact = vz
     vz = -vz * restitution
     applyBounceFriction(vzImpact, vz)                    # NEW: couples the bounce's vertical impulse
-                                                          # to a one-time vx,vy loss (bounce_friction_mu)
+                                                          # to a one-time vx,vy loss (ball_bounce_friction)
 vx,vy *= (airborne ? air_decay : ball_decay)             # xy friction unchanged on the ground,
                                                           # ~frictionless while airborne
 ```
 
-All parameters (`gravity`, `ball_bounce_restitution`, `bounce_friction_mu`,
+All parameters (`gravity`, `ball_bounce_restitution`, `ball_bounce_friction`,
 `loft_power_cost`, `air_decay`, `player_reach_height`, plus every existing
 `ServerParam`-style constant) are live sliders in the right-hand panel — this
 is meant as a tuning lab: change one constant, Step/Play, watch the arc,
@@ -90,7 +90,7 @@ Plain-language explanation of each one:
 | `loft` | How high you aim the kick (0-90°). `0` = a normal flat kick, just like today's server. `90` = straight up in the air. |
 | `gravity` | How fast the ball falls back down. Lower = the ball hangs in the air longer (a floaty lob). Higher = it drops quickly. |
 | `ball_bounce_restitution` | How "bouncy" the ball is. `0` = it just goes dead on the first touch. Close to `1` = it keeps bouncing almost as high as before. |
-| `bounce_friction_mu` | When the ball hits the ground hard, it now also loses a bit of its sideways speed (not just its up/down speed) — like a real ball would. Higher = a harder bounce slows the ball down sideways more. `0` = bounces never affect sideways speed at all (the old behavior). |
+| `ball_bounce_friction` | When the ball hits the ground hard, it now also loses a bit of its sideways speed (not just its up/down speed) — like a real ball would. Higher = a harder bounce slows the ball down sideways more. `0` = bounces never affect sideways speed at all (the old behavior). |
 | `loft_power_cost` | Kicking the ball high up "costs" some of your kick's power — so a big lob doesn't travel as far sideways as a flat kick with the same power. |
 | `air_decay` | How much the ball slows down sideways while it's flying through the air. Kept very close to `1` (almost no slowdown), since air barely affects a soccer ball. |
 | `bounce_stop_speed` | Once the ball's bounces get small/slow enough, it just stops bouncing and settles flat on the ground instead of bouncing forever in tinier and tinier hops. |
@@ -363,7 +363,7 @@ lab-scale numbers:
   showing its live `x=.., y=.., z=..` — same screen-projection technique as the
   field labels, updated every rendered frame.
 
-## Impact friction couples the bounce to horizontal speed (new `bounce_friction_mu`), and precise bounce timing is now the default
+## Impact friction couples the bounce to horizontal speed (new `ball_bounce_friction`), and precise bounce timing is now the default
 
 Previously a ground bounce only ever touched **vertical** speed
 (`ball_bounce_restitution`) — the horizontal (x,y) speed was completely
@@ -381,11 +381,11 @@ Complementarity Problem, with the tangential impulse capped by
 [`compare.md`](compare.md) for the full three-way trace through
 rcssserver / SimSpark / this lab.
 
-1. **New parameter `bounce_friction_mu` (default 0.3)** — at every ground
+1. **New parameter `ball_bounce_friction` (default 0.3)** — at every ground
    bounce, `_applyBounceFriction()` computes `normalImpulse = |vz before
    bounce| - |vz after bounce|` (how much vertical speed the bounce just
    absorbed), then scales the ball's horizontal speed down by up to
-   `bounce_friction_mu * normalImpulse` (clamped so it can never reverse
+   `ball_bounce_friction * normalImpulse` (clamped so it can never reverse
    direction or go negative). `0` reproduces the old behavior exactly
    (bounce never touches vx/vy); higher values make a harder bounce bleed
    off proportionally more horizontal speed on that one impact. Slider +
@@ -404,10 +404,10 @@ rcssserver / SimSpark / this lab.
    comparison.
 
 Verified with `node debug_trace.js 100 0 60 60`: with the new defaults
-(`bounce_friction_mu=0.3`), the first bounce (cycle 19→20) drops horizontal
+(`ball_bounce_friction=0.3`), the first bounce (cycle 19→20) drops horizontal
 speed from `vx=0.8499` to `vx=0.6918` — a visible one-time loss right at
 impact — vs. `vx=0.8499 → 0.8491` (i.e. no meaningful change) with
-`bounce_friction_mu=0` reproducing the old behavior. The ball still settles
+`ball_bounce_friction=0` reproducing the old behavior. The ball still settles
 correctly (5 decaying bounces, "Ball settled on ground." at cycle 49, then
 rolls out and "Ball stopped rolling." per the normal `roll_stop_speed`
 check) — no infinite oscillation or divergence introduced.
