@@ -49,6 +49,18 @@ const DEFAULT_PARAMS = {
   // snappier/lower arc, lower it (e.g. 0.05-0.1) for a long floaty lob.
   gravity: 0.15,
   ball_bounce_restitution: 0.65,
+
+  // NEW: couples the bounce's vertical (normal) impulse to a one-time horizontal
+  // (tangential) speed loss, approximating Coulomb friction (F_friction <= mu *
+  // F_normal) the way a real rigid-body/ODE contact solver resolves both at once
+  // (see SimSpark's ContactJointHandler `mu`). Applied ONCE per bounce event, right
+  // where vel.z is reflected - separate from (and in addition to) the continuous
+  // per-cycle ball_decay/air_decay xy friction below. 0 = old behavior (bounce never
+  // touches vx/vy at all); higher = harder bounces bleed off proportionally more
+  // horizontal speed on impact, matching the physical intuition that a ball hitting
+  // the ground hard loses energy on ALL axes, not just vertically.
+  bounce_friction_mu: 0.3,
+
   loft_power_cost: 0.4,     // fraction of power "spent" lifting the ball at 90 deg loft
   air_decay: 0.999,         // xy friction while ball is AIRBORNE (near-zero air resistance)
   bounce_stop_speed: 0.05,  // |vz| below this on a ground touch => ball settles (z=0,vz=0)
@@ -62,18 +74,19 @@ const DEFAULT_PARAMS = {
 
   dt: 0.1,                  // seconds simulated per "cycle" (matches rcssserver's 100ms cycle)
 
-  // EXPERIMENTAL (default OFF, toggle in the lab UI to A/B test): when false
-  // (current/original behavior), a cycle that would carry the ball below
-  // z=0 just clamps pos.z straight to 0 and bounces from there - silently
-  // discarding whatever fraction of that cycle's fall happened AFTER the
-  // true ground-crossing instant. When true, step() instead finds the exact
+  // Toggle in the lab UI to A/B test. Default is now TRUE (changed from the original
+  // false/"naive" default): when true, a cycle that would carry the ball below z=0
+  // does NOT just clamp pos.z straight to 0 - step() instead finds the exact
   // fractional point within the cycle where z would have crossed 0 (linear
   // interpolation - a cycle moves the ball at a constant vel.z), bounces the
-  // velocity at that instant, then continues moving for the REMAINING
-  // fraction of the cycle with the reflected velocity - like "mirroring"
-  // the tail end of the fall back upward instead of chopping it off. See
-  // step() for the implementation.
-  precise_bounce_timing: false,
+  // velocity at that instant, then continues moving for the REMAINING fraction of
+  // the cycle with the reflected velocity - like "mirroring" the tail end of the
+  // fall back upward instead of chopping it off, so the ball never visibly dips
+  // below ground. When false (the ORIGINAL/legacy behavior, kept only for A/B
+  // comparison), the cycle is integrated straight-line for its full length and any
+  // overshoot past z=0 is silently discarded (post-hoc snap-to-zero). See step()
+  // for the implementation of both branches.
+  precise_bounce_timing: true,
 };
 
 class KickLabPhysics {
@@ -261,6 +274,28 @@ class KickLabPhysics {
     return a;
   }
 
+  // ---- Impact friction: couple the bounce's normal (vertical) impulse to a
+  // one-time horizontal (tangential) speed loss, approximating Coulomb
+  // friction (F_friction <= mu * F_normal), the way a real rigid-body
+  // solver (e.g. SimSpark/ODE's ContactJointHandler) resolves normal AND
+  // tangential impulses from the SAME contact event together instead of as
+  // two unrelated multipliers. Call this ONCE per ground-touch, right after
+  // vel.z is reflected (or zeroed on settle) — normalImpulse is how much
+  // vertical speed the bounce just absorbed (|incoming vz| - |outgoing vz|).
+  _applyBounceFriction(vzImpact, postBounceVz) {
+    const p = this.params;
+    const b = this.ball;
+    const normalImpulse = Math.abs(vzImpact) - Math.abs(postBounceVz);
+    if (normalImpulse <= 0 || p.bounce_friction_mu <= 0) return;
+    const speedXY = Math.hypot(b.vel.x, b.vel.y);
+    if (speedXY <= 1e-9) return;
+    const maxLoss = p.bounce_friction_mu * normalImpulse; // Coulomb cap: F_friction <= mu * F_normal
+    const loss = Math.min(maxLoss, speedXY);              // friction can't reverse the tangential velocity
+    const scale = (speedXY - loss) / speedXY;
+    b.vel.x *= scale;
+    b.vel.y *= scale;
+  }
+
   // ---- STEP: advance the simulation by exactly one cycle ----
   //
   // IMPORTANT UNIT NOTE (bug fix): the kick formula above produces
@@ -319,6 +354,7 @@ class KickLabPhysics {
         const vzImpact = b.vel.z;      // velocity at the moment of impact
         const candidate = -vzImpact * p.ball_bounce_restitution;
         if (Math.abs(candidate) < p.bounce_stop_speed) {
+          this._applyBounceFriction(vzImpact, 0);
           b.vel.z = 0;
           b.pos.z = 0;
           if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground." });
@@ -345,6 +381,7 @@ class KickLabPhysics {
           // benefit of mirroring while preserving the same decay behavior
           // as the original clamp-to-zero model.
           const remaining = 1 - frac;
+          this._applyBounceFriction(vzImpact, candidate);
           b.vel.z = candidate;
           b.pos.z = Math.max(0, candidate * remaining - 0.5 * p.gravity * remaining * remaining);
           this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)} (mirrored mid-step)` });
@@ -368,11 +405,14 @@ class KickLabPhysics {
       // dips below the threshold, so the ball bounces forever at a fixed
       // tiny amplitude instead of settling (verified via debug_trace.js —
       // a loft kick used to bounce at a constant vz≈0.06 indefinitely).
-      const candidate = -b.vel.z * p.ball_bounce_restitution;
+      const vzImpact = b.vel.z;
+      const candidate = -vzImpact * p.ball_bounce_restitution;
       if (Math.abs(candidate) < p.bounce_stop_speed) {
+        this._applyBounceFriction(vzImpact, 0);
         b.vel.z = 0;
         if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground." });
       } else {
+        this._applyBounceFriction(vzImpact, candidate);
         b.vel.z = candidate;
         this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)}` });
       }

@@ -60,15 +60,22 @@ accel_z    = eff_power * sin(loft)                     // NEW
 # per-cycle integration:
 vz  += -gravity * dt
 pos += vel * dt
-if pos.z <= 0: pos.z = 0; vz = -vz * restitution        # NEW: bounce
+if pos.z <= 0:                                          # NEW: bounce (see precise_bounce_timing below
+                                                          # for the exact-crossing variant, now default)
+    pos.z = 0
+    vzImpact = vz
+    vz = -vz * restitution
+    applyBounceFriction(vzImpact, vz)                    # NEW: couples the bounce's vertical impulse
+                                                          # to a one-time vx,vy loss (bounce_friction_mu)
 vx,vy *= (airborne ? air_decay : ball_decay)             # xy friction unchanged on the ground,
                                                           # ~frictionless while airborne
 ```
 
-All parameters (`gravity`, `ball_bounce_restitution`, `loft_power_cost`,
-`air_decay`, `player_reach_height`, plus every existing `ServerParam`-style
-constant) are live sliders in the right-hand panel — this is meant as a
-tuning lab: change one constant, Step/Play, watch the arc, repeat.
+All parameters (`gravity`, `ball_bounce_restitution`, `bounce_friction_mu`,
+`loft_power_cost`, `air_decay`, `player_reach_height`, plus every existing
+`ServerParam`-style constant) are live sliders in the right-hand panel — this
+is meant as a tuning lab: change one constant, Step/Play, watch the arc,
+repeat.
 
 ## Files
 
@@ -329,6 +336,55 @@ lab-scale numbers:
 - **Ball coordinate label**: a blue tag now floats just above the ball at all times
   showing its live `x=.., y=.., z=..` — same screen-projection technique as the
   field labels, updated every rendered frame.
+
+## Impact friction couples the bounce to horizontal speed (new `bounce_friction_mu`), and precise bounce timing is now the default
+
+Previously a ground bounce only ever touched **vertical** speed
+(`ball_bounce_restitution`) — the horizontal (x,y) speed was completely
+untouched by the bounce itself, only slowly bled off afterwards by the
+separate, continuous `ball_decay`/`air_decay` friction. That's not how a
+real ball loses energy: hitting the ground hard (a big vertical impact)
+should also cost you some horizontal speed on that same instant, because
+the impact is a single physical event, not two independent axes.
+
+This mirrors how the 3D league (SimSpark, built on the ODE physics engine)
+resolves a bounce: ODE's contact solver treats the normal (vertical) and
+tangential (horizontal/friction) impulses as one coupled Linear
+Complementarity Problem, with the tangential impulse capped by
+`mu * normalImpulse` (a Coulomb friction pyramid) — see
+[`compare.md`](compare.md) for the full three-way trace through
+rcssserver / SimSpark / this lab.
+
+1. **New parameter `bounce_friction_mu` (default 0.3)** — at every ground
+   bounce, `_applyBounceFriction()` computes `normalImpulse = |vz before
+   bounce| - |vz after bounce|` (how much vertical speed the bounce just
+   absorbed), then scales the ball's horizontal speed down by up to
+   `bounce_friction_mu * normalImpulse` (clamped so it can never reverse
+   direction or go negative). `0` reproduces the old behavior exactly
+   (bounce never touches vx/vy); higher values make a harder bounce bleed
+   off proportionally more horizontal speed on that one impact. Slider +
+   `!`/`↺` buttons added alongside the other physics parameters.
+2. **`precise_bounce_timing` default changed from `false` to `true`.**
+   Investigating rcssserver's own goal-post collision code
+   (`MPObject::intersect()`/`nearestPost()` in `object.cpp`) showed it
+   already uses a continuous/analytical time-of-impact scheme — the exact
+   same idea as this lab's `precise_bounce_timing=true` mode (find the
+   exact fractional point within the cycle where the crossing happens,
+   then continue the remaining fraction with the reflected velocity)
+   rather than the simpler discrete "clamp to the surface, discard the
+   overshoot" scheme. Since that's the more accurate *and* more
+   server-authentic behavior, it's now the default; the old discrete
+   scheme is kept as the `false` legacy/experimental alternative for A/B
+   comparison.
+
+Verified with `node debug_trace.js 100 0 60 60`: with the new defaults
+(`bounce_friction_mu=0.3`), the first bounce (cycle 19→20) drops horizontal
+speed from `vx=0.8499` to `vx=0.6918` — a visible one-time loss right at
+impact — vs. `vx=0.8499 → 0.8491` (i.e. no meaningful change) with
+`bounce_friction_mu=0` reproducing the old behavior. The ball still settles
+correctly (5 decaying bounces, "Ball settled on ground." at cycle 49, then
+rolls out and "Ball stopped rolling." per the normal `roll_stop_speed`
+check) — no infinite oscillation or divergence introduced.
 
 ## Notes / things to try next
 
