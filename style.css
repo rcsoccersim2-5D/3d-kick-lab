@@ -122,6 +122,14 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .infoBtn:hover { background: #24343f; }
 .infoBtn.active { background: #7fd4ff; color: #10151a; }
+.infoBtn.resetBtn { border-color: #6a5a3a; color: #ffd25a; font-size: 11px; }
+.infoBtn.resetBtn:hover { background: #3a2f1c; }
+
+.labelControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 
 .paramDesc {
   display: none;

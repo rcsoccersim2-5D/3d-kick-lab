@@ -188,14 +188,38 @@
   );
   scene.add(ball);
 
-  // trail line
+  // trail line + point markers
+  //
+  // FIX for "can't see the trail from some camera angles": a plain THREE.Line at
+  // y=0 sits exactly co-planar with the field (also at y=0) and grid (y=0.001) -
+  // from grazing/top-down angles, floating-point depth precision makes the trail
+  // flicker behind the ground ("z-fighting"), and a 1px line is easy to lose
+  // regardless of angle since WebGL ignores CSS-style linewidth on most
+  // platforms. Fix: (1) lift the whole trail slightly off the ground, (2)
+  // disable depth-testing with a high renderOrder so it always draws ON TOP of
+  // the field/grid instead of fighting with them, and (3) add small always-size
+  // point markers along the trail (easier to spot than a thin line from any
+  // viewing angle, especially end-on).
   const MAX_TRAIL = 600;
+  const TRAIL_LIFT = 0.04; // world units raised above the true ball height, visual-only
   const trailGeom = new THREE.BufferGeometry();
   const trailPositions = new Float32Array(MAX_TRAIL * 3);
   trailGeom.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
   trailGeom.setDrawRange(0, 0);
-  const trailLine = new THREE.Line(trailGeom, new THREE.LineBasicMaterial({ color: 0xffd25a }));
+  const trailMat = new THREE.LineBasicMaterial({ color: 0xffd25a, depthTest: false });
+  const trailLine = new THREE.Line(trailGeom, trailMat);
+  trailLine.renderOrder = 998;
   scene.add(trailLine);
+
+  const trailPointsMat = new THREE.PointsMaterial({
+    color: 0xffa800,
+    size: 0.18,
+    sizeAttenuation: true,
+    depthTest: false,
+  });
+  const trailPoints = new THREE.Points(trailGeom, trailPointsMat);
+  trailPoints.renderOrder = 999;
+  scene.add(trailPoints);
 
   function physToThree(p) {
     return new THREE.Vector3(p.x, p.z, p.y);
@@ -208,7 +232,7 @@
     for (let i = 0; i < n; i++) {
       const v = physToThree(t[start + i]);
       trailPositions[i * 3] = v.x;
-      trailPositions[i * 3 + 1] = v.y;
+      trailPositions[i * 3 + 1] = v.y + TRAIL_LIFT; // lift ONLY the trail visual, not the ball itself
       trailPositions[i * 3 + 2] = v.z;
     }
     trailGeom.setDrawRange(0, n);
@@ -258,12 +282,35 @@
     ballCoordEl.textContent = `x=${p.x.toFixed(2)}, y=${p.y.toFixed(2)}, z=${p.z.toFixed(2)}`;
   }
 
+  // ---------------- Step scrubber (timeline bar) ----------------
+  // Backed by sim.history (full pos+vel snapshot per cycle, see physics.js).
+  // Dragging it jumps directly to that cycle (no re-simulation); Step/Play
+  // keep working exactly as before and simply advance sim.cycle, which this
+  // syncs back onto the bar every frame.
+  const stepSlider = $("stepScrubber");
+  const stepLabelEl = $("stepLabel");
+
+  stepSlider.oninput = () => {
+    stopPlaying();
+    sim.gotoStep(parseInt(stepSlider.value, 10));
+    renderFrame();
+    updateEventLog();
+  };
+
+  function syncStepScrubber() {
+    const maxIdx = Math.max(0, sim.history.length - 1);
+    stepSlider.max = maxIdx;
+    stepSlider.value = sim.cycle;
+    stepLabelEl.textContent = `${sim.cycle} / ${maxIdx}`;
+  }
+
   function renderFrame() {
     syncMeshes();
     updateReadouts();
     updateAxisLabels();
     updateMouseCoordLabel();
     updateBallCoordLabel();
+    syncStepScrubber();
     renderer.render(scene, camera);
   }
 
@@ -328,6 +375,10 @@
       $("kickInfo").textContent = info.reason;
     }
     updateEventLog();
+    // Auto-start playback so the kick's effect is immediately visible instead
+    // of requiring a separate manual Play click. Step/Play/Pause/the scrubber
+    // bar all still work exactly as before once playback is running.
+    if (info.ok && !playing) $("btnPlay").onclick();
   };
 
   // Export a full trace (params + trail + events) as a downloadable JSON file
@@ -379,20 +430,51 @@
     loft_power_cost: "NEW parameter: fraction of eff_power 'spent' purely on lifting the ball, scaled by loft/90deg. At loft=90 with loft_power_cost=0.4, you only keep 60% of eff_power total. Raise it to make big lobs cost noticeably more power than grounders; set to 0 to make loft 'free' (same total power regardless of angle).",
     air_decay: "NEW parameter: per-cycle horizontal (x,y) speed multiplier while the ball is AIRBORNE (z>0), separate from ball_decay which only applies on the ground. Kept close to 1.0 (near-frictionless) by default since air resistance on a soccer ball is small - lower it to simulate more drag on a flying ball.",
     bounce_stop_speed: "NEW parameter: once a ground-touch's vertical speed magnitude drops below this threshold, the ball 'settles' (z locked to 0, vz set to 0) instead of bouncing again forever. Raise it to make the ball stop bouncing sooner/more abruptly.",
+    roll_stop_speed: "NEW parameter: once a ball RESTING on the ground (already settled, vz=0) has its horizontal (x,y) speed decay below this threshold, it freezes completely (vx=vy=0) instead of creeping forever at a near-zero crawl. Separate from bounce_stop_speed, which only governs the vertical bounce->settle transition. Raise it to make rolling balls stop sooner/more abruptly; lower it to let them creep longer before fully stopping.",
     player_height: "Visual height of the player cylinder (meters) AND indirectly relevant to how tall the player is when reasoning about headers - not itself a physics input, but pairs conceptually with player_reach_height below.",
     player_reach_height: "NEW parameter: maximum ball z at which the ball is still considered kickable/headable (used in isBallKickable() alongside the normal 2D kickable-circle test). Lower it to simulate 'the ball flew over the player's head, they can't reach it'.",
     dt: "Seconds represented by ONE simulation cycle (rcssserver's cycle = 0.1s = 100ms, matched here by default). Only affects real-time playback pacing (how fast Play advances cycles per wall-clock second) - it is NOT used inside the physics formulas themselves (pos/vel integration is purely per-cycle, matching rcssserver's own convention).",
   };
 
-  function attachInfoButton(rowEl, key) {
+  // Defaults used by the per-variable AND "reset all" buttons. Kick command
+  // sliders aren't part of DEFAULT_PARAMS (they're per-kick inputs, not physics
+  // constants), so they get their own small defaults map; physics parameter
+  // defaults come straight from window.DEFAULT_PARAMS (never mutated in place).
+  const KICK_DEFAULTS = { power: 100, dir: 0, loft: 60 };
+  const resettableInputs = []; // { input, defaultValue } - used by "Reset ALL parameters"
+
+  function attachInfoButton(rowEl, key, defaultValue) {
     const label = rowEl.querySelector("label");
-    if (!label) return;
+    const input = rowEl.querySelector("input[type=range]");
+    if (!label || !input) return;
+
+    // Group the value badge + "!"/"↺" buttons into one right-hand cluster so the
+    // label stays a clean two-column layout (name on the left, controls on the
+    // right) instead of flexbox spreading 3-4 loose items across the row.
+    const valueSpan = label.querySelector("span");
+    const rightGroup = document.createElement("span");
+    rightGroup.className = "labelControls";
+    if (valueSpan) rightGroup.appendChild(valueSpan); // moves it out of `label`, into rightGroup
+
     const btn = document.createElement("button");
     btn.className = "infoBtn";
     btn.type = "button";
     btn.textContent = "!";
     btn.title = "What does this do?";
-    label.appendChild(btn);
+    rightGroup.appendChild(btn);
+
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "infoBtn resetBtn";
+    resetBtn.type = "button";
+    resetBtn.textContent = "↺";
+    resetBtn.title = `Reset to default (${defaultValue})`;
+    resetBtn.onclick = () => {
+      input.value = defaultValue;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    rightGroup.appendChild(resetBtn);
+
+    label.appendChild(rightGroup);
 
     const desc = document.createElement("div");
     desc.className = "paramDesc";
@@ -403,11 +485,13 @@
       const open = desc.classList.toggle("open");
       btn.classList.toggle("active", open);
     };
+
+    resettableInputs.push({ input, defaultValue });
   }
 
-  attachInfoButton(document.getElementById("row_power"), "power");
-  attachInfoButton(document.getElementById("row_dir"), "dir");
-  attachInfoButton(document.getElementById("row_loft"), "loft");
+  attachInfoButton(document.getElementById("row_power"), "power", KICK_DEFAULTS.power);
+  attachInfoButton(document.getElementById("row_dir"), "dir", KICK_DEFAULTS.dir);
+  attachInfoButton(document.getElementById("row_loft"), "loft", KICK_DEFAULTS.loft);
 
   // ---- dynamic parameter sliders (generated from DEFAULT_PARAMS ranges) ----
   const PARAM_RANGES = {
@@ -425,6 +509,7 @@
     loft_power_cost:         [0.0, 0.9, 0.01],
     air_decay:               [0.90, 1.0, 0.001],
     bounce_stop_speed:       [0.0, 0.5, 0.01],
+    roll_stop_speed:         [0.0, 0.5, 0.01],
     player_height:           [1.0, 2.5, 0.05],
     player_reach_height:     [0.0, 2.5, 0.05],
     dt:                      [0.02, 0.5, 0.01],
@@ -467,8 +552,18 @@
     row.appendChild(label);
     row.appendChild(input);
     sliderHost.appendChild(row);
-    attachInfoButton(row, key);
+    attachInfoButton(row, key, window.DEFAULT_PARAMS[key]);
   });
+
+  // "Reset ALL parameters" — restores every kick/physics slider to its default
+  // (does NOT touch ball position/velocity - that's the separate "Reset ⟲" button
+  // in the Playback section, which resets the simulation state instead).
+  $("btnResetAllParams").onclick = () => {
+    resettableInputs.forEach(({ input, defaultValue }) => {
+      input.value = defaultValue;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
 
   // init number inputs — ball starts at x=0.3 (explicit default), just in front
   // of the player at the origin, rather than the computed kickable-edge distance.

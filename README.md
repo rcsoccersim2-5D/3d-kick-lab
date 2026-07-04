@@ -147,6 +147,84 @@ Since the simulation runs in-browser, there's no automatic server-side log
    useful for quickly A/B-testing a parameter change without opening a
    browser at all.
 
+## Ball stops simulating once resting/rolling to a halt (and two related bounce bugs fixed)
+
+Three related changes so the sim doesn't keep computing an effectively-motionless ball forever:
+
+1. **New parameter `roll_stop_speed` (default 0.05)** — once a ball resting on the ground (already
+   vertically settled) has its horizontal (x,y) speed decay below this value, it freezes completely
+   (`vx=vy=0`) and an event `"Ball stopped rolling."` is logged. This is separate from
+   `bounce_stop_speed`, which only governs the vertical bounce → settle transition. Slider + `!`/`↺`
+   buttons added alongside the other physics parameters.
+2. **Fixed: a resting ball never actually settled vertically.** With the defaults (`gravity=0.15` >
+   `bounce_stop_speed=0.05`), gravity alone exceeds the settle threshold every cycle, so a ball already
+   at rest kept "falling" 0.15/cycle, bouncing back up, and repeating forever — confirmed via
+   `debug_trace.js` (a pure grounder kick, `loft=0`, bounced at a constant `vz≈0.06` indefinitely
+   instead of never leaving the ground at all). Fixed by skipping the gravity/position-integration step
+   entirely while the ball is already resting (`pos.z<=0 && vel.z===0`) — any kick or velocity change
+   makes `vel.z` non-zero again next cycle, so gravity resumes normally.
+3. **Fixed: airborne bounces could also converge to a stable non-decaying oscillation.** The settle
+   check compared the *incoming* fall velocity to `bounce_stop_speed`, but that incoming velocity
+   converges to a fixed value around `gravity` every cycle and can never dip below the threshold if
+   `gravity > bounce_stop_speed` — so a loft kick's bounces settled down to a small amplitude
+   (`vz≈0.06`) and then bounced there forever instead of finally stopping. Fixed by checking the
+   *predicted post-bounce* velocity against `bounce_stop_speed` instead of the incoming one, so the
+   ball now settles for good a couple of bounces after crossing the threshold.
+
+Verified end-to-end with `node debug_trace.js 100 0 60 130`: kick → 5 decaying bounces → settles
+vertically at cycle 44 → rolls and decays → `"Ball stopped rolling."` fires at cycle 85, after which
+the ball is fully at rest.
+
+## Step scrubber bar + kick auto-starts playback
+
+- **Step bar**: a new range slider ("Step X / Y") next to the Speed control in the Playback section.
+  Every simulated cycle now records a full snapshot (position + velocity) in `sim.history`
+  (see `KickLabPhysics.gotoStep()` in [physics.js](physics.js)); dragging the bar jumps straight to that
+  cycle without re-running the physics, so you can scrub back and forth through a kick's whole
+  trajectory. `Step ⏭`/`Play ▶`/`Pause ⏸` still work exactly as before and keep the bar in sync every
+  frame.
+- **Kick auto-starts playback**: clicking `Kick ⚽` now automatically starts Play (equivalent to
+  clicking `Play ▶` yourself) whenever the kick was valid, so the ball's flight is immediately visible
+  instead of requiring a separate manual step. You can still `Pause ⏸` or drag the Step bar at any time
+  to inspect a specific cycle.
+
+## Per-variable reset (↺) and "Reset ALL parameters"
+
+- Every slider (Power/Direction/Loft, and all physics parameters) now has a
+  small **"↺"** button right next to its **"!"** info button. Click it to snap
+  just that one variable back to its default value — handy after you've been
+  experimenting and want to isolate the effect of a single change again.
+- **"Reset ALL parameters"** (top of the "Physics parameters" section) resets
+  every kick + physics slider to its default in one click.
+- Neither of these touches the ball's position/velocity — that's still the
+  job of the separate **"Reset ⟲"** button in the Playback section, which
+  resets the simulation state (cycle count, trail, ball pos/vel) using
+  whatever is currently in the "Ball initial state" fields. The two reset
+  concerns (parameters vs. simulation state) are kept independent on purpose.
+
+## Ball trail visibility fix
+
+**Symptom:** from some camera angles (especially top-down/grazing angles),
+the yellow ball trail became hard to see or seemed to disappear entirely.
+
+**Cause:** the trail line sat exactly on the ground plane (`y=0`), co-planar
+with the field mesh and grid helper (also at `y≈0`) — floating-point depth
+precision made the thin line "z-fight" with the ground and flicker in and
+out depending on viewing angle; on top of that, a plain `THREE.Line` is only
+1px wide in WebGL (linewidth is ignored on most GPUs/browsers), so it was
+easy to lose even when it *was* rendering.
+
+**Fix** (see [main.js](main.js), trail setup near `MAX_TRAIL`):
+- The trail is now rendered with `depthTest: false` and a high `renderOrder`,
+  so it always draws **on top of** the field/grid instead of fighting with
+  them for the same depth-buffer pixels.
+- It's lifted a small fixed amount (`TRAIL_LIFT = 0.04`) above the ball's
+  true height, purely visually (the ball mesh itself is NOT shifted — only
+  the trail line/points use the lift).
+- Small always-visible point markers (`THREE.Points`, size-attenuated) were
+  added along the same path as the line, since dots are easier to spot than
+  a 1px line from an end-on or steep angle.
+
 ## "!" info buttons — understand what each variable does
 
 Every kick parameter (Power/Direction/Loft) and every physics parameter in the

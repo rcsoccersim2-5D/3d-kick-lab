@@ -52,6 +52,7 @@ const DEFAULT_PARAMS = {
   loft_power_cost: 0.4,     // fraction of power "spent" lifting the ball at 90 deg loft
   air_decay: 0.999,         // xy friction while ball is AIRBORNE (near-zero air resistance)
   bounce_stop_speed: 0.05,  // |vz| below this on a ground touch => ball settles (z=0,vz=0)
+  roll_stop_speed: 0.05,    // horizontal (xy) speed below this WHILE RESTING ON GROUND => ball freezes (vx=vy=0)
   player_height: 2.0,       // cylinder height (m) - visual + "can this player head the ball" band
 
   player_reach_height: 2.0, // max z at which a player can play/kick an airborne ball
@@ -85,9 +86,35 @@ class KickLabPhysics {
     this.cycle = 0;
     this.time = 0;
     this.trail = [{ ...this.ball.pos }];
+    // Full-state snapshot history (pos+vel+cycle+time) used by the step scrubber
+    // bar to jump directly to any past cycle without re-running physics. Kept
+    // deliberately UNCAPPED (unlike `trail`, which is capped for render perf) so
+    // cycle numbers always map 1:1 to array indices — Reset clears it.
+    this.history = [this._snapshot()];
     this.maxHeightReached = this.ball.pos.z;
     this.lastKickInfo = null;
     this.events = []; // {cycle, text}
+  }
+
+  _snapshot() {
+    return {
+      cycle: this.cycle,
+      time: this.time,
+      pos: { ...this.ball.pos },
+      vel: { ...this.ball.vel },
+    };
+  }
+
+  // Jump the simulation directly to a previously-recorded cycle (scrubbing),
+  // without re-stepping physics. Used by the Step bar in main.js.
+  gotoStep(idx) {
+    idx = Math.max(0, Math.min(idx, this.history.length - 1));
+    const snap = this.history[idx];
+    this.ball.pos = { ...snap.pos };
+    this.ball.vel = { ...snap.vel };
+    this.cycle = snap.cycle;
+    this.time = snap.time;
+    return idx;
   }
 
   // ---- distance helpers ----
@@ -187,6 +214,13 @@ class KickLabPhysics {
       accel: { x: accelX, y: accelY, z: accelZ },
     };
     this.events.push({ cycle: this.cycle, text: `Kick: power=${power}, dir=${dirDeg}°, loft=${loftDeg}° → accel=(${accelX.toFixed(2)},${accelY.toFixed(2)},${accelZ.toFixed(2)})` });
+
+    // A kick changes velocity instantly but position only moves on the NEXT
+    // step() — update the current cycle's history snapshot in place so
+    // scrubbing back to this exact cycle shows the post-kick velocity.
+    if (this.history.length > 0) {
+      this.history[this.history.length - 1].vel = { ...this.ball.vel };
+    }
     return this.lastKickInfo;
   }
 
@@ -215,23 +249,42 @@ class KickLabPhysics {
     const p = this.params;
     const b = this.ball;
     const airborne = b.pos.z > 1e-6;
+    // A ball already resting flat on the ground (settled by a previous bounce,
+    // vel.z exactly 0) must NOT have gravity re-applied to it: gravity alone
+    // (default 0.15) is bigger than bounce_stop_speed (default 0.05), so a
+    // resting ball would "fall" 0.15/cycle, hit the settle check, bounce back
+    // up at 0.15*restitution, then fall again — a perpetual micro-bounce that
+    // never actually settles (verified via debug_trace.js: a grounder kick
+    // bounces at ~0.06 forever instead of stopping). Skipping gravity while
+    // already resting fixes this; any kick or external velocity change makes
+    // vel.z non-zero again next cycle, so gravity resumes normally then.
+    const resting = b.pos.z <= 0 && b.vel.z === 0;
 
     // gravity (z only) — per-cycle velocity loss, same unit scale as the kick's vz
-    b.vel.z += -p.gravity;
+    if (!resting) b.vel.z += -p.gravity;
 
     // integrate position — per-cycle, matching rcssserver's `pos += vel`
     b.pos.x += b.vel.x;
     b.pos.y += b.vel.y;
-    b.pos.z += b.vel.z;
+    if (!resting) b.pos.z += b.vel.z;
 
     // ground collision / bounce
     if (b.pos.z <= 0) {
       b.pos.z = 0;
-      if (Math.abs(b.vel.z) < p.bounce_stop_speed) {
+      // Check the PREDICTED post-bounce velocity against bounce_stop_speed,
+      // not the incoming fall velocity. Checking the incoming velocity is
+      // wrong whenever gravity > bounce_stop_speed (true for the defaults:
+      // gravity=0.15, bounce_stop_speed=0.05): the incoming velocity then
+      // converges to a stable ~gravity-sized value every cycle and NEVER
+      // dips below the threshold, so the ball bounces forever at a fixed
+      // tiny amplitude instead of settling (verified via debug_trace.js —
+      // a loft kick used to bounce at a constant vz≈0.06 indefinitely).
+      const candidate = -b.vel.z * p.ball_bounce_restitution;
+      if (Math.abs(candidate) < p.bounce_stop_speed) {
         b.vel.z = 0;
         if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground." });
       } else {
-        b.vel.z = -b.vel.z * p.ball_bounce_restitution;
+        b.vel.z = candidate;
         this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)}` });
       }
     }
@@ -241,11 +294,27 @@ class KickLabPhysics {
     b.vel.x *= decay;
     b.vel.y *= decay;
 
+    // Ground roll-stop: once a RESTING ball's horizontal speed decays below
+    // roll_stop_speed, freeze it fully (vx=vy=0) instead of continuing to
+    // simulate an effectively-motionless ball forever. This is separate from
+    // bounce_stop_speed, which only governs the vertical bounce -> settle
+    // transition (z). Only applies once the ball is actually resting on the
+    // ground (z<=0 and vz already zeroed by the bounce logic above).
+    if (b.pos.z <= 0 && b.vel.z === 0) {
+      const speedXY = Math.sqrt(b.vel.x ** 2 + b.vel.y ** 2);
+      if (speedXY > 0 && speedXY < p.roll_stop_speed) {
+        b.vel.x = 0;
+        b.vel.y = 0;
+        this.events.push({ cycle: this.cycle, text: "Ball stopped rolling." });
+      }
+    }
+
     this.cycle += 1;
     this.time += p.dt;
     this.maxHeightReached = Math.max(this.maxHeightReached, b.pos.z);
     this.trail.push({ ...b.pos });
     if (this.trail.length > 2000) this.trail.shift();
+    this.history.push(this._snapshot());
   }
 
   speed() {

@@ -30,6 +30,10 @@
           <label>Speed <span id="speedVal">1x</span></label>
           <input type="range" id="speed" min="0.25" max="8" step="0.25" value="1" />
         </div>
+        <div class="row">
+          <label>Step <span id="stepLabel">0 / 0</span></label>
+          <input type="range" id="stepScrubber" min="0" max="0" step="1" value="0" />
+        </div>
         <div class="readout">
           <div>Cycle: <span id="roCycle">0</span> &nbsp; Time: <span id="roTime">0.00</span>s</div>
           <div>Ball pos (x,y,z): <span id="roPos">-</span></div>
@@ -73,6 +77,9 @@
 
       <div class="section">
         <h2>Physics parameters</h2>
+        <div class="row buttons">
+          <button id="btnResetAllParams">Reset ALL parameters ↺</button>
+        </div>
         <div id="paramSliders"></div>
       </div>
 
