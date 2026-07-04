@@ -323,8 +323,30 @@ class KickLabPhysics {
           b.pos.z = 0;
           if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground." });
         } else {
+          // BUG FIX (v1 attempted, reverted): the naive version set
+          // vel.z = candidate and coasted for the remaining fraction of the
+          // cycle WITHOUT applying that fraction's share of gravity, which
+          // conserved slightly too much energy and locked into an exact
+          // non-decaying 2-cycle oscillation for the default params
+          // (gravity=0.15, restitution=0.65, bounce_stop_speed=0.05) —
+          // isAtRest() never became true. A first fix attempt subtracted a
+          // full `gravity*remaining` from vel.z too, but that double-counts
+          // decay on the VELOCITY carried into next cycle and made the
+          // ball's fall diverge (vz blew up to -40+ instead of settling).
+          //
+          // Correct fix: keep vel.z assignment IDENTICAL to the non-precise
+          // path (b.vel.z = candidate) so velocity accounting — and thus
+          // isAtRest()/roll_stop_speed convergence — behaves exactly like
+          // the proven-correct off-mode. Only the POSITION for the
+          // remainder of the cycle is improved, using real kinematics
+          // (pos = v*t - 1/2*g*t^2) instead of a straight-line
+          // extrapolation, so the visible arc doesn't overshoot upward
+          // unrealistically. This keeps the "no visible underground dip"
+          // benefit of mirroring while preserving the same decay behavior
+          // as the original clamp-to-zero model.
+          const remaining = 1 - frac;
           b.vel.z = candidate;
-          b.pos.z = Math.max(0, b.vel.z * (1 - frac));
+          b.pos.z = Math.max(0, candidate * remaining - 0.5 * p.gravity * remaining * remaining);
           this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)} (mirrored mid-step)` });
         }
         bounced = true;
@@ -332,6 +354,7 @@ class KickLabPhysics {
         b.pos.z = newZ;
       }
     }
+
 
     // ground collision / bounce (skipped if the precise-timing branch above
     // already resolved this cycle's bounce)
