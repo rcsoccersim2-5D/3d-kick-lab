@@ -63,7 +63,20 @@
       </div>
 
       <div class="section">
+        <h2>Saved runs (compare)</h2>
+        <div class="row buttons">
+          <button id="btnSaveRun">💾 Save current run</button>
+          <button id="btnUncheckAllRuns">☐ Uncheck all</button>
+          <button id="btnClearAllRuns">🗑 Clear all</button>
+        </div>
+        <div id="savedRunsList" class="savedRunsList">
+          <div class="savedRunsEmpty">No saved runs yet — hit "Save current run" after a kick to compare it later.</div>
+        </div>
+      </div>
+
+      <div class="section">
         <h2>Ball initial state (applies on Reset)</h2>
+
         <div class="grid3">
           <label>x <input type="number" id="init_x" step="0.1" /></label>
           <label>y <input type="number" id="init_y" step="0.1" /></label>

@@ -180,3 +180,63 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-family: Consolas, monospace;
 }
 .eventlog div { border-bottom: 1px dashed #1d262d; padding: 2px 0; }
+
+/* ---- Saved runs (compare) ---- */
+.savedRunsList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.savedRunsEmpty {
+  font-size: 12px;
+  color: #6f7d87;
+  font-style: italic;
+  padding: 6px 2px;
+}
+.savedRunItem {
+  background: #10161b;
+  border: 1px solid #262f38;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.savedRunRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.savedRunSwatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255,255,255,0.4);
+}
+.savedRunMeta {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: #c7d2da;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.savedRunMeta .savedRunTime { color: #6f7d87; font-size: 10px; display: block; }
+.savedRunButtons { display: flex; gap: 4px; flex: 0 0 auto; }
+.savedRunButtons .infoBtn { width: auto; height: auto; border-radius: 4px; padding: 2px 6px; font-size: 10px; }
+.savedRunParams {
+  display: none;
+  font-size: 11px;
+  color: #c7d2da;
+  background: #101a20;
+  border: 1px solid #2a3b45;
+  border-left: 3px solid #7fd4ff;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 6px;
+  line-height: 1.5;
+  font-family: Consolas, monospace;
+  white-space: pre-wrap;
+}
+.savedRunParams.open { display: block; }

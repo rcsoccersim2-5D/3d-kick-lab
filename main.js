@@ -417,6 +417,237 @@
     el.oninput = () => { $(id + "Val").textContent = el.value; };
   });
 
+  // ---------------- Saved runs (compare) ----------------
+  // Persisted to localStorage so runs survive a page reload. Each saved run
+  // snapshots everything needed to (a) redraw its trajectory in a distinct
+  // color without re-simulating, and (b) restore/apply its exact params back
+  // onto the live sliders. Storage is per-browser only (no server) — "clear
+  // all" is the "clear db" the user asked for.
+  const SAVED_RUNS_KEY = "kicklab_saved_runs_v1";
+  const RUN_COLORS = [
+    0xff5a5a, 0x5ad1ff, 0xffd25a, 0x8dff5a, 0xc77aff,
+    0xff8f4d, 0x4dffc7, 0xff4dc7, 0xa0ff4d, 0x4d8fff,
+  ];
+  const runColorHex = (n) => "#" + n.toString(16).padStart(6, "0");
+
+  function loadSavedRuns() {
+    try {
+      const raw = localStorage.getItem(SAVED_RUNS_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      console.warn("Failed to load saved runs from localStorage:", e);
+      return [];
+    }
+  }
+  function persistSavedRuns(list) {
+    try {
+      localStorage.setItem(SAVED_RUNS_KEY, JSON.stringify(list));
+    } catch (e) {
+      console.warn("Failed to persist saved runs to localStorage:", e);
+    }
+  }
+
+  let savedRuns = loadSavedRuns();
+  // id -> { line, points, geom } for currently-checked (rendered) compare trails
+  const compareTrails = new Map();
+
+  function buildCompareTrail(run) {
+    const n = run.trail.length;
+    if (n < 1) return;
+    const geom = new THREE.BufferGeometry();
+    const positions = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const v = physToThree(run.trail[i]);
+      positions[i * 3] = v.x;
+      positions[i * 3 + 1] = v.y + TRAIL_LIFT;
+      positions[i * 3 + 2] = v.z;
+    }
+    geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
+    const lineMat = new THREE.LineBasicMaterial({ color: run.color, depthTest: false });
+    const line = new THREE.Line(geom, lineMat);
+    line.renderOrder = 500;
+    scene.add(line);
+
+    const pointsMat = new THREE.PointsMaterial({ color: run.color, size: 0.14, sizeAttenuation: true, depthTest: false });
+    const points = new THREE.Points(geom, pointsMat);
+    points.renderOrder = 501;
+    scene.add(points);
+
+    compareTrails.set(run.id, { line, points, geom, lineMat, pointsMat });
+  }
+
+  function removeCompareTrail(id) {
+    const entry = compareTrails.get(id);
+    if (!entry) return;
+    scene.remove(entry.line);
+    scene.remove(entry.points);
+    entry.geom.dispose();
+    entry.lineMat.dispose();
+    entry.pointsMat.dispose();
+    compareTrails.delete(id);
+  }
+
+  function fmtParamsBlock(run) {
+    const lines = [];
+    lines.push(`kick: power=${run.kick.power}, dir=${run.kick.dir}, loft=${run.kick.loft}`);
+    lines.push(`init: x=${run.init.x}, y=${run.init.y}, z=${run.init.z}, vx=${run.init.vx}, vy=${run.init.vy}, vz=${run.init.vz}`);
+    lines.push("params:");
+    Object.keys(run.params).sort().forEach((k) => lines.push(`  ${k} = ${run.params[k]}`));
+    return lines.join("\n");
+  }
+
+  function applyRunParams(run) {
+    // Kick command sliders
+    $("power").value = run.kick.power; $("power").dispatchEvent(new Event("input", { bubbles: true }));
+    $("dir").value = run.kick.dir; $("dir").dispatchEvent(new Event("input", { bubbles: true }));
+    $("loft").value = run.kick.loft; $("loft").dispatchEvent(new Event("input", { bubbles: true }));
+    // Ball initial state
+    $("init_x").value = run.init.x;
+    $("init_y").value = run.init.y;
+    $("init_z").value = run.init.z;
+    $("init_vx").value = run.init.vx;
+    $("init_vy").value = run.init.vy;
+    $("init_vz").value = run.init.vz;
+    // Physics parameters — drive every matching slider/checkbox via resettableInputs
+    // so PARAM_RANGES sliders, BOOL_PARAMS checkboxes, and their value labels/sim.params all stay in sync.
+    resettableInputs.forEach(({ input, isCheckbox }) => {
+      const key = input.id;
+      if (!(key in run.params)) return;
+      if (isCheckbox) input.checked = !!run.params[key]; else input.value = run.params[key];
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  function deleteRun(id) {
+    removeCompareTrail(id);
+    savedRuns = savedRuns.filter((r) => r.id !== id);
+    persistSavedRuns(savedRuns);
+    renderSavedRunsList();
+  }
+
+  function renderSavedRunsList() {
+    const host = $("savedRunsList");
+    host.innerHTML = "";
+    if (savedRuns.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "savedRunsEmpty";
+      empty.textContent = "No saved runs yet — hit \"Save current run\" after a kick to compare it later.";
+      host.appendChild(empty);
+      return;
+    }
+    savedRuns.forEach((run) => {
+      const item = document.createElement("div");
+      item.className = "savedRunItem";
+
+      const row = document.createElement("div");
+      row.className = "savedRunRow";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = compareTrails.has(run.id);
+      checkbox.onchange = () => {
+        if (checkbox.checked) buildCompareTrail(run); else removeCompareTrail(run.id);
+      };
+      row.appendChild(checkbox);
+
+      const swatch = document.createElement("span");
+      swatch.className = "savedRunSwatch";
+      swatch.style.background = runColorHex(run.color);
+      row.appendChild(swatch);
+
+      const meta = document.createElement("span");
+      meta.className = "savedRunMeta";
+      meta.title = run.name;
+      meta.innerHTML = `${run.name}<span class="savedRunTime">${new Date(run.savedAt).toLocaleString()}</span>`;
+      row.appendChild(meta);
+
+      const btnGroup = document.createElement("span");
+      btnGroup.className = "savedRunButtons";
+
+      const paramsBtn = document.createElement("button");
+      paramsBtn.className = "infoBtn";
+      paramsBtn.type = "button";
+      paramsBtn.textContent = "params";
+      paramsBtn.title = "Show saved params for this run";
+      btnGroup.appendChild(paramsBtn);
+
+      const applyBtn = document.createElement("button");
+      applyBtn.className = "infoBtn";
+      applyBtn.type = "button";
+      applyBtn.textContent = "apply";
+      applyBtn.title = "Load this run's params into the current sliders";
+      applyBtn.onclick = () => applyRunParams(run);
+      btnGroup.appendChild(applyBtn);
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "infoBtn resetBtn";
+      delBtn.type = "button";
+      delBtn.textContent = "✕";
+      delBtn.title = "Delete this saved run";
+      delBtn.onclick = () => deleteRun(run.id);
+      btnGroup.appendChild(delBtn);
+
+      row.appendChild(btnGroup);
+      item.appendChild(row);
+
+      const paramsBlock = document.createElement("div");
+      paramsBlock.className = "savedRunParams";
+      paramsBlock.textContent = fmtParamsBlock(run);
+      item.appendChild(paramsBlock);
+      paramsBtn.onclick = () => {
+        const open = paramsBlock.classList.toggle("open");
+        paramsBtn.classList.toggle("active", open);
+      };
+
+      host.appendChild(item);
+    });
+  }
+
+  $("btnSaveRun").onclick = () => {
+    const n = savedRuns.length + 1;
+    const kick = { power: parseFloat($("power").value), dir: parseFloat($("dir").value), loft: parseFloat($("loft").value) };
+    const run = {
+      id: (crypto.randomUUID ? crypto.randomUUID() : `run_${Date.now()}_${Math.random().toString(36).slice(2)}`),
+      name: `Run ${n} — P${kick.power} D${kick.dir} L${kick.loft} (${sim.cycle} cyc)`,
+      savedAt: new Date().toISOString(),
+      color: RUN_COLORS[savedRuns.length % RUN_COLORS.length],
+      cycle: sim.cycle,
+      time: sim.time,
+      maxHeightReached: sim.maxHeightReached,
+      trail: sim.trail.map((p) => ({ ...p })),
+      params: { ...sim.params },
+      kick,
+      init: {
+        x: parseFloat($("init_x").value) || 0,
+        y: parseFloat($("init_y").value) || 0,
+        z: parseFloat($("init_z").value) || 0,
+        vx: parseFloat($("init_vx").value) || 0,
+        vy: parseFloat($("init_vy").value) || 0,
+        vz: parseFloat($("init_vz").value) || 0,
+      },
+    };
+    savedRuns.push(run);
+    persistSavedRuns(savedRuns);
+    renderSavedRunsList();
+  };
+
+  $("btnUncheckAllRuns").onclick = () => {
+    Array.from(compareTrails.keys()).forEach(removeCompareTrail);
+    renderSavedRunsList();
+  };
+
+  $("btnClearAllRuns").onclick = () => {
+    if (savedRuns.length === 0) return;
+    if (!confirm(`Delete all ${savedRuns.length} saved run(s)? This cannot be undone.`)) return;
+    Array.from(compareTrails.keys()).forEach(removeCompareTrail);
+    savedRuns = [];
+    persistSavedRuns(savedRuns);
+    renderSavedRunsList();
+  };
+
+  renderSavedRunsList();
+
   // ---- "!" info buttons: click to reveal a short explanation of what a
   // variable does and how changing it affects the simulation. ----
   const DESCRIPTIONS = {
