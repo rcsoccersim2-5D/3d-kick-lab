@@ -56,6 +56,9 @@ const DEFAULT_PARAMS = {
   player_height: 2.0,       // cylinder height (m) - visual + "can this player head the ball" band
 
   player_reach_height: 2.0, // max z at which a player can play/kick an airborne ball
+  height_power_cost: 0.25,  // NEW: fraction of effPower lost as ball.z approaches player_reach_height
+                            // (mirrors the existing 0.25 weight already used for dirDiff/distBall below —
+                            // previously ball height had ZERO effect on power, only a binary reach cutoff)
 
   dt: 0.1,                  // seconds simulated per "cycle" (matches rcssserver's 100ms cycle)
 };
@@ -161,8 +164,22 @@ class KickLabPhysics {
 
     const distBall = this.ballDistanceFromPlayer() - p.player_size - p.ball_size;
 
+    // Height penalty: how far UP the ball currently is, as a fraction of the
+    // player's max reach height (0 = ball on the ground, 1 = right at the
+    // reach-height cutoff). Previously ball.z had NO effect on effPower at
+    // all — only a binary isBallKickable() cutoff at player_reach_height, so
+    // a header at head height cost exactly the same power as a grounder at
+    // the player's feet. This mirrors the existing distBall/dirDiff terms so
+    // a higher ball is now progressively harder to strike with full power,
+    // same idea as being off-angle or at the edge of kickable_margin.
+    const heightFrac = p.player_reach_height > 0
+      ? Math.max(0, this.ball.pos.z) / p.player_reach_height
+      : 0;
+
     let effPower = power * p.kick_power_rate *
-      (1 - 0.25 * dirDiff / Math.PI - 0.25 * Math.max(0, distBall) / p.kickable_margin);
+      (1 - 0.25 * dirDiff / Math.PI
+         - 0.25 * Math.max(0, distBall) / p.kickable_margin
+         - p.height_power_cost * heightFrac);
     effPower = Math.max(0, effPower);
 
     // Loft costs power (your idea: kicking upward reduces available push)
@@ -209,6 +226,7 @@ class KickLabPhysics {
       ok: true,
       dirDiffDeg: dirDiff * RAD2DEG,
       distBall,
+      heightFrac,
       effPower,
       effPowerTotal,
       accel: { x: accelX, y: accelY, z: accelZ },

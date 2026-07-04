@@ -376,7 +376,7 @@
     const info = sim.kick(power, dir, loft);
     if (info.ok) {
       $("kickInfo").innerHTML =
-        `dir_diff=${info.dirDiffDeg.toFixed(1)}°, dist_ball=${info.distBall.toFixed(3)}, ` +
+        `dir_diff=${info.dirDiffDeg.toFixed(1)}°, dist_ball=${info.distBall.toFixed(3)}, height_frac=${info.heightFrac.toFixed(3)}, ` +
         `eff_power=${info.effPower.toFixed(3)}, eff_power(loft-adj)=${info.effPowerTotal.toFixed(3)}<br/>` +
         `accel = (${info.accel.x.toFixed(2)}, ${info.accel.y.toFixed(2)}, ${info.accel.z.toFixed(2)})`;
     } else {
@@ -441,6 +441,7 @@
     roll_stop_speed: "NEW parameter: once a ball RESTING on the ground (already settled, vz=0) has its horizontal (x,y) speed decay below this threshold, it freezes completely (vx=vy=0) instead of creeping forever at a near-zero crawl. Separate from bounce_stop_speed, which only governs the vertical bounce->settle transition. Raise it to make rolling balls stop sooner/more abruptly; lower it to let them creep longer before fully stopping.",
     player_height: "Visual height of the player cylinder (meters) AND indirectly relevant to how tall the player is when reasoning about headers - not itself a physics input, but pairs conceptually with player_reach_height below.",
     player_reach_height: "NEW parameter: maximum ball z at which the ball is still considered kickable/headable (used in isBallKickable() alongside the normal 2D kickable-circle test). Lower it to simulate 'the ball flew over the player's head, they can't reach it'.",
+    height_power_cost: "NEW parameter: fraction of eff_power lost as the ball's height approaches player_reach_height (0 = ball on the ground costs nothing extra, 1 = a ball right at the reach-height cutoff loses ALL power). Mirrors the existing angle/distance power penalties - previously ball height had NO effect on kick power at all, only a binary reach cutoff. Set to 0 to make height free again (old behavior); raise it to make headers/volleys noticeably weaker than grounders.",
     dt: "Seconds represented by ONE simulation cycle (rcssserver's cycle = 0.1s = 100ms, matched here by default). Only affects real-time playback pacing (how fast Play advances cycles per wall-clock second) - it is NOT used inside the physics formulas themselves (pos/vel integration is purely per-cycle, matching rcssserver's own convention).",
   };
 
@@ -520,6 +521,7 @@
     roll_stop_speed:         [0.0, 0.5, 0.01],
     player_height:           [1.0, 2.5, 0.05],
     player_reach_height:     [0.0, 2.5, 0.05],
+    height_power_cost:       [0.0, 1.0, 0.01],
     dt:                      [0.02, 0.5, 0.01],
   };
 

@@ -147,6 +147,40 @@ Since the simulation runs in-browser, there's no automatic server-side log
    useful for quickly A/B-testing a parameter change without opening a
    browser at all.
 
+## Ball height now affects kick power (new `height_power_cost` parameter)
+
+Previously, ball height (`z`) had **zero** effect on kick power — `isBallKickable()` only applied a
+binary reach cutoff (`z <= player_reach_height`), so a header at head height cost exactly the same
+power as a grounder at the player's feet, unlike horizontal distance/angle which already reduce power
+continuously (see `distBall`/`dirDiff` in `kick()`).
+
+Added a `heightFrac = ball.z / player_reach_height` term (0 = ball on the ground, 1 = right at the
+reach-height cutoff) to the `eff_power` formula, weighted by a new tunable **`height_power_cost`**
+(default **0.25**, matching the existing fixed `0.25` weight already used for angle/distance):
+
+```js
+effPower = power * kick_power_rate * (
+  1 - 0.25 * dirDiff / PI
+    - 0.25 * distBall / kickable_margin
+    - height_power_cost * heightFrac        // NEW
+);
+```
+
+Set `height_power_cost` to 0 to restore the old "height is free" behavior; raise it (up to 1.0) to make
+headers/volleys progressively weaker the higher the ball is. Verified numerically (same x/y/angle,
+`power=100`, `player_reach_height=2.0`, default `height_power_cost=0.25`):
+
+| ball z | height_frac | eff_power |
+|---|---|---|
+| 0    | 0.000 | 2.589 |
+| 1    | 0.500 | 2.252 |
+| 1.9  | 0.950 | 1.948 |
+| 2.01 | — | rejected (`isBallKickable()` = false, beyond `player_reach_height`) |
+
+The kick-info readout in the UI now also shows `height_frac` alongside `dir_diff`/`dist_ball`, and a
+new slider (with `!`/`↺` buttons, same pattern as every other physics parameter) was added for
+`height_power_cost`.
+
 ## Ball stops simulating once resting/rolling to a halt (and two related bounce bugs fixed)
 
 Three related changes so the sim doesn't keep computing an effectively-motionless ball forever:
