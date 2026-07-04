@@ -314,12 +314,29 @@ class KickLabPhysics {
     this.maxHeightReached = Math.max(this.maxHeightReached, b.pos.z);
     this.trail.push({ ...b.pos });
     if (this.trail.length > 2000) this.trail.shift();
+
+    // If the Step scrubber bar was dragged BACK to an earlier cycle and the
+    // sim is then stepped/played forward again, discard the stale "future"
+    // history beyond that point before appending — otherwise history[idx]
+    // would stop matching cycle idx once new states are appended past the
+    // old array length, breaking gotoStep()'s direct index==cycle mapping.
+    if (this.history.length > this.cycle) this.history.length = this.cycle;
     this.history.push(this._snapshot());
   }
 
   speed() {
     const v = this.ball.vel;
     return Math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2);
+  }
+
+  // True once the ball has fully settled: resting on the ground (z<=0) AND
+  // every velocity component has been zeroed out by the bounce-settle /
+  // roll_stop_speed logic in step() (both zero it out EXACTLY, not just
+  // "below a threshold" — so this check is exact, no epsilon needed). Used
+  // by main.js to auto-stop playback once there's nothing left to animate.
+  isAtRest() {
+    const v = this.ball.vel;
+    return this.ball.pos.z <= 0 && v.x === 0 && v.y === 0 && v.z === 0;
   }
 }
 

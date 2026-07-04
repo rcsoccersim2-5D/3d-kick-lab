@@ -592,6 +592,11 @@
         sim.step();
         accum -= cycleDt;
         guard++;
+        // Auto-stop playback once the ball has fully settled (checked live
+        // every step, so this works correctly even right after dragging the
+        // Step scrubber bar to an earlier point and pressing Play again) —
+        // otherwise Cycle/Time kept climbing forever with nothing left to show.
+        if (sim.isAtRest()) { stopPlaying(); break; }
       }
       updateEventLog();
     }
