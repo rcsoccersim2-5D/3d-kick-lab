@@ -380,6 +380,7 @@ class KickLabPhysics {
     if (!resting) b.vel.z += -p.gravity;
 
     // integrate position — per-cycle, matching rcssserver's `pos += vel`
+    const x0 = b.pos.x, y0 = b.pos.y; // pre-integration x/y, needed below to locate the true impact point
     b.pos.x += b.vel.x;
     b.pos.y += b.vel.y;
 
@@ -402,12 +403,27 @@ class KickLabPhysics {
         // fall/travel.
         const frac = z0 / (z0 - newZ); // 0..1, fraction of the cycle before impact
         const vzImpact = b.vel.z;      // velocity at the moment of impact
+
+        // TRUE ground-contact point: vel.x/vel.y are constant across the whole
+        // cycle (no horizontal force), so the ball's ACTUAL x/y at the instant
+        // z crosses 0 is x0/y0 (pre-integration, captured above) advanced by
+        // only the `frac` share of this cycle's horizontal motion — NOT the
+        // full-cycle x/y already written into b.pos above. Without this, the
+        // recorded trail sample for this cycle jumps straight to the
+        // full-cycle x/y with a "mirrored" (partial-cycle) z, silently
+        // skipping over the real (x,y,0) contact point in between — e.g. a
+        // ball at (0,0,1) falling to a would-be (1,0,-0.25) doesn't actually
+        // touch ground at x=1; it touches down around x=frac*1, and neither
+        // trail sample on either side of the bounce cycle is ever placed
+        // there. Attaching it to the event lets main.js plot that exact spot.
+        const impact = { x: x0 + b.vel.x * frac, y: y0 + b.vel.y * frac, z: 0 };
+
         const candidate = -vzImpact * p.ball_bounce_restitution;
         if (Math.abs(candidate) < settleThreshold) {
           this._applyBounceFriction(vzImpact, 0);
           b.vel.z = 0;
           b.pos.z = 0;
-          if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground." });
+          if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground.", impact });
         } else {
           // BUG FIX (v1 attempted, reverted): the naive version set
           // vel.z = candidate and coasted for the remaining fraction of the
@@ -434,9 +450,10 @@ class KickLabPhysics {
           this._applyBounceFriction(vzImpact, candidate);
           b.vel.z = candidate;
           b.pos.z = Math.max(0, candidate * remaining - 0.5 * p.gravity * remaining * remaining);
-          this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)} (mirrored mid-step)` });
+          this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)} (mirrored mid-step)`, impact });
         }
         bounced = true;
+
       } else {
         b.pos.z = newZ;
       }

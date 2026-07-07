@@ -262,10 +262,75 @@
     trailGeom.attributes.position.needsUpdate = true;
   }
 
+  // Bounce markers: with precise_bounce_timing=ON, physics.js's step() only
+  // records ONE trail sample per cycle - the position AFTER a full cycle of
+  // x/y motion, paired with a z value "mirrored" for just the fractional
+  // remainder of the cycle after impact. That recorded sample is NOT where
+  // the ball actually touched the ground: the real (analytic) contact point
+  // is x0/y0 advanced by only the impact-fraction share of the cycle, at
+  // z=0 exactly - a distinct location the trail line skips over entirely
+  // (see physics.js step()'s `impact` field + its derivation comment).
+  // These markers plot that true, otherwise-invisible ground-contact point.
+  const MAX_BOUNCE_MARKERS = 200;
+
+  const bounceGeom = new THREE.BufferGeometry();
+  const bouncePositions = new Float32Array(MAX_BOUNCE_MARKERS * 3);
+  bounceGeom.setAttribute("position", new THREE.BufferAttribute(bouncePositions, 3));
+  bounceGeom.setDrawRange(0, 0);
+  const bounceMat = new THREE.PointsMaterial({
+    color: 0xff2d2d,
+    size: 0.34,
+    sizeAttenuation: true,
+    depthTest: false,
+  });
+  const bouncePoints = new THREE.Points(bounceGeom, bounceMat);
+  // renderOrder is LOWER than trailLine (998) and trailPoints (999) on purpose:
+  // with depthTest:false, draw order is decided purely by renderOrder, so a
+  // bounce marker sitting at (or very near) the same spot as a trail point/line
+  // segment must always be painted UNDERNEATH its orange neighbors, not on top
+  // of them - otherwise the bigger red square visually floats in front of/above
+  // the trajectory line instead of looking like a point ON it.
+  bouncePoints.renderOrder = 997;
+  bouncePoints.frustumCulled = false; // same dynamic-geometry fix as trailLine/trailPoints above
+  scene.add(bouncePoints);
+
+  function refreshBounceMarkers() {
+    // Bounce events are pushed with `cycle: this.cycle` BEFORE the cycle
+    // counter is incremented (see physics.js step()) - an event "took effect"
+    // once sim.cycle has advanced past event.cycle, so gating on
+    // `e.cycle < sim.cycle` keeps markers scrub-safe: they vanish/reappear
+    // correctly when dragging the Step bar backward/forward, exactly like
+    // the trail/history arrays already do.
+    //
+    // Only precise-timing bounce/settle events carry `impact` (the analytic
+    // true ground-contact point - see physics.js step()'s `impact` comment);
+    // plot that instead of the recorded (mirrored) trail sample, since the
+    // recorded sample sits at a different x/y than where the ball really hit.
+    const markers = [];
+    for (const e of sim.events) {
+      if (!e.impact) continue;
+      if (e.cycle >= sim.cycle) continue; // not reached yet (e.g. scrubbed back)
+      markers.push(e.impact);
+    }
+    const n = Math.min(markers.length, MAX_BOUNCE_MARKERS);
+    const start = markers.length - n;
+    for (let i = 0; i < n; i++) {
+      const v = physToThree(markers[start + i]);
+      bouncePositions[i * 3] = v.x;
+      bouncePositions[i * 3 + 1] = v.y + TRAIL_LIFT;
+      bouncePositions[i * 3 + 2] = v.z;
+    }
+    bounceGeom.setDrawRange(0, n);
+    bounceGeom.attributes.position.needsUpdate = true;
+  }
+
+
+
   function syncMeshes() {
     const v = physToThree(sim.ball.pos);
     ball.position.set(v.x, v.y + params.ball_size, v.z);
     refreshTrailMesh();
+    refreshBounceMarkers();
   }
 
   // ---------------- UI wiring ----------------
@@ -365,6 +430,21 @@
 
   $("btnStep").onclick = () => { stopPlaying(); doStep(); };
   $("btnReset").onclick = () => { stopPlaying(); doReset(); };
+
+  // "Ground View (z=0)" - snaps the camera down to just above the field plane
+  // and centers on the ball's CURRENT position, so bounce points (including
+  // the red off-ground bounce markers above) can be eyeballed almost edge-on
+  // against the field grid to check how close to z=0 they really land.
+  // Re-clicking after stepping/playing further re-centers on the ball's new
+  // position - it is a one-shot snap, not a locked/tracking camera mode, so
+  // OrbitControls dragging afterwards behaves exactly as it does everywhere else.
+  $("btnGroundView").onclick = () => {
+    const v = physToThree(sim.ball.pos);
+    const eyeHeight = 0.15; // just above the field mesh (y=0) to avoid clipping into it
+    camera.position.set(v.x, eyeHeight, v.z + 14);
+    controls.target.set(v.x, eyeHeight, v.z);
+    controls.update();
+  };
 
   function stopPlaying() {
     playing = false;
