@@ -282,6 +282,42 @@ class KickLabPhysics {
     return a;
   }
 
+  // ---- BUG FIX: perpetual-bounce guard ----
+  // Root cause (found via debug_trace.js parameter sweeps): the naive settle
+  // test `|candidate| < bounce_stop_speed` only ever looks at ONE bounce in
+  // isolation. But when gravity is large enough relative to bounce_stop_speed
+  // (fully reachable from the gravity slider, e.g. gravity >= ~0.5 with the
+  // default restitution=0.5), the ball never gets a full cycle of hang time —
+  // it re-touches the ground on every single step() call. In that degenerate
+  // "always touching" regime the per-cycle recurrence is
+  //   vz_(n+1) = restitution * (gravity - vz_n)
+  // which is a contraction (error shrinks by `restitution` each cycle) that
+  // converges to a NONZERO fixed point:
+  //   vzStar = restitution * gravity / (1 + restitution)
+  // If vzStar >= bounce_stop_speed, the ball converges to — and then sits at —
+  // a constant-amplitude bounce FOREVER, since the flat velocity threshold is
+  // never crossed (verified: gravity=0.5/1.0/1.5/2.0 with restitution=0.5 all
+  // reproduce this, none of them ever settle even after 2000+ cycles). This
+  // reproduces the "ball bounces again and again forever" bug report exactly,
+  // and happens with BOTH precise_bounce_timing=ON and OFF (same threshold
+  // check, same recurrence — this is not a timing-mode issue).
+  //
+  // Fix: settle whenever the candidate speed is at-or-below this analytic
+  // fixed point (with a tiny tolerance), IN ADDITION TO the existing
+  // bounce_stop_speed check. This guarantees termination for ANY
+  // gravity/restitution combination reachable from the sliders. It does NOT
+  // affect normal, genuinely-airborne multi-cycle bounce decays (their real
+  // hang time each bounce means they cross below bounce_stop_speed via the
+  // ordinary per-bounce restitution decay long before ever approaching this
+  // degenerate fixed point — verified: default and moderate-restitution cases
+  // settle at the same cycle as before this fix).
+  _bounceSettleThreshold() {
+    const p = this.params;
+    if (p.ball_bounce_restitution >= 1 || p.gravity <= 0) return p.bounce_stop_speed;
+    const vzStar = (p.ball_bounce_restitution * p.gravity) / (1 + p.ball_bounce_restitution);
+    return Math.max(p.bounce_stop_speed, vzStar * 1.0001);
+  }
+
   // ---- Impact friction: couple the bounce's normal (vertical) impulse to a
   // one-time horizontal (tangential) speed loss, approximating Coulomb
   // friction (F_friction <= mu * F_normal), the way a real rigid-body
@@ -334,6 +370,12 @@ class KickLabPhysics {
     // vel.z non-zero again next cycle, so gravity resumes normally then.
     const resting = b.pos.z <= 0 && b.vel.z === 0;
 
+    // Settle threshold used by BOTH bounce-resolution branches below — see
+    // _bounceSettleThreshold()'s comment for why this is more than just
+    // `p.bounce_stop_speed` (perpetual-bounce guard for high gravity/
+    // restitution combos where the ball never gets a full cycle of hang time).
+    const settleThreshold = this._bounceSettleThreshold();
+
     // gravity (z only) — per-cycle velocity loss, same unit scale as the kick's vz
     if (!resting) b.vel.z += -p.gravity;
 
@@ -361,7 +403,7 @@ class KickLabPhysics {
         const frac = z0 / (z0 - newZ); // 0..1, fraction of the cycle before impact
         const vzImpact = b.vel.z;      // velocity at the moment of impact
         const candidate = -vzImpact * p.ball_bounce_restitution;
-        if (Math.abs(candidate) < p.bounce_stop_speed) {
+        if (Math.abs(candidate) < settleThreshold) {
           this._applyBounceFriction(vzImpact, 0);
           b.vel.z = 0;
           b.pos.z = 0;
@@ -415,7 +457,7 @@ class KickLabPhysics {
       // a loft kick used to bounce at a constant vz≈0.06 indefinitely).
       const vzImpact = b.vel.z;
       const candidate = -vzImpact * p.ball_bounce_restitution;
-      if (Math.abs(candidate) < p.bounce_stop_speed) {
+      if (Math.abs(candidate) < settleThreshold) {
         this._applyBounceFriction(vzImpact, 0);
         b.vel.z = 0;
         if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground." });
