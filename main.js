@@ -217,6 +217,20 @@
   const trailMat = new THREE.LineBasicMaterial({ color: 0xffd25a, depthTest: false });
   const trailLine = new THREE.Line(trailGeom, trailMat);
   trailLine.renderOrder = 998;
+  // BUG FIX ("live trail vanishes on zoom, saved-run trails don't"): a saved
+  // run's compare-trail geometry is built ONCE with its final, complete
+  // position data, so Three.js's automatic (one-time, lazy) boundingSphere
+  // computation on first render is already correct forever. The LIVE trail's
+  // geometry, by contrast, is mutated every frame in refreshTrailMesh() below
+  // (positions rewritten + drawRange grown) WITHOUT ever recomputing
+  // boundingSphere - so frustum-culling keeps testing against the stale
+  // (tiny/near-origin) sphere from the very first render, and once the camera
+  // (zoom) moves enough that the frustum no longer overlaps that stale
+  // sphere, Three.js culls the whole object even though the actual
+  // trail/ball position is still clearly on-screen. Disabling frustumCulled
+  // on these two ALWAYS-DYNAMIC objects sidesteps the stale-bounding-sphere
+  // problem entirely (cheap for a single line/point-cloud like this).
+  trailLine.frustumCulled = false;
   scene.add(trailLine);
 
   const trailPointsMat = new THREE.PointsMaterial({
@@ -227,6 +241,7 @@
   });
   const trailPoints = new THREE.Points(trailGeom, trailPointsMat);
   trailPoints.renderOrder = 999;
+  trailPoints.frustumCulled = false; // see trailLine.frustumCulled comment above
   scene.add(trailPoints);
 
   function physToThree(p) {
