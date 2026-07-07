@@ -30,7 +30,7 @@ py -m http.server 8000
   player's body facing — matches rcssserver's convention), and the new
   **`loft`** (0-90°, 0 = grounder exactly like today's server, 90 = straight
   up). Hitting **Kick** only works if the ball is within the kickable circle
-  **and** within `player_reach_height` (so you can't "kick" a ball flying
+  **and** within `player_height` (so you can't "kick" a ball flying
   10m over your head) — mirrors the design discussion's height-gated
   kickable-area idea.
 - **Playback**: **Step** advances exactly one physics cycle (`dt` seconds,
@@ -72,7 +72,7 @@ vx,vy *= (airborne ? air_decay : ball_decay)             # xy friction unchanged
 ```
 
 All parameters (`gravity`, `ball_bounce_restitution`, `ball_bounce_friction`,
-`loft_power_cost`, `air_decay`, `player_reach_height`, plus every existing
+`loft_power_cost`, `air_decay`, `player_height`, plus every existing
 `ServerParam`-style constant) are live sliders in the right-hand panel — this
 is meant as a tuning lab: change one constant, Step/Play, watch the arc,
 repeat.
@@ -89,13 +89,13 @@ Plain-language explanation of each one:
 |---|---|
 | `loft` | How high you aim the kick (0-90°). `0` = a normal flat kick, just like today's server. `90` = straight up in the air. |
 | `gravity` | How fast the ball falls back down. Lower = the ball hangs in the air longer (a floaty lob). Higher = it drops quickly. |
-| `ball_bounce_restitution` | How "bouncy" the ball is. `0` = it just goes dead on the first touch. Close to `1` = it keeps bouncing almost as high as before. |
-| `ball_bounce_friction` | When the ball hits the ground hard, it now also loses a bit of its sideways speed (not just its up/down speed) — like a real ball would. Higher = a harder bounce slows the ball down sideways more. `0` = bounces never affect sideways speed at all (the old behavior). |
+| `ball_bounce_restitution` | How "bouncy" the ball is. `0` = it just goes dead on the first touch. Close to `1` = it keeps bouncing almost as high as before. Default `0.5` (was `0.65`). |
+| `ball_bounce_friction` | When the ball hits the ground hard, it now also loses a bit of its sideways speed (not just its up/down speed) — like a real ball would. Higher = a harder bounce slows the ball down sideways more. `0` = bounces never affect sideways speed at all (the old behavior). Default `0.5` (was `0.3`). |
 | `loft_power_cost` | Kicking the ball high up "costs" some of your kick's power — so a big lob doesn't travel as far sideways as a flat kick with the same power. |
 | `air_decay` | How much the ball slows down sideways while it's flying through the air. Kept very close to `1` (almost no slowdown), since air barely affects a soccer ball. |
 | `bounce_stop_speed` | Once the ball's bounces get small/slow enough, it just stops bouncing and settles flat on the ground instead of bouncing forever in tinier and tinier hops. |
 | `roll_stop_speed` | Once a ball rolling on the ground gets slow enough, it just stops completely instead of creeping along forever at a crawl. |
-| `player_reach_height` | How high up a player can still reach the ball. A ball flying above this height is "too high" — the player can't kick/head it. |
+| `player_height` | How tall the player is (visual cylinder height) **and** how high up they can still reach the ball (merged from a former separate `player_reach_height` param — the two always shared the same default, so they're now one slider). A ball flying above this height is "too high" — the player can't kick/head it. |
 | `height_power_cost` | Kicking a ball that's already up in the air (like a header) costs a bit more power than kicking the same ball on the ground. |
 | `precise_bounce_timing` | A toggle for *how* the bounce is calculated. **ON (default)**: finds the exact instant the ball touches the ground for a smooth, accurate bounce. **OFF**: an older, simpler method kept only so you can compare the two. |
 
@@ -183,11 +183,11 @@ Since the simulation runs in-browser, there's no automatic server-side log
 ## Ball height now affects kick power (new `height_power_cost` parameter)
 
 Previously, ball height (`z`) had **zero** effect on kick power — `isBallKickable()` only applied a
-binary reach cutoff (`z <= player_reach_height`), so a header at head height cost exactly the same
+binary reach cutoff (`z <= player_height`, formerly a separate `player_reach_height` param — since merged), so a header at head height cost exactly the same
 power as a grounder at the player's feet, unlike horizontal distance/angle which already reduce power
 continuously (see `distBall`/`dirDiff` in `kick()`).
 
-Added a `heightFrac = ball.z / player_reach_height` term (0 = ball on the ground, 1 = right at the
+Added a `heightFrac = ball.z / player_height` term (0 = ball on the ground, 1 = right at the
 reach-height cutoff) to the `eff_power` formula, weighted by a new tunable **`height_power_cost`**
 (default **0.25**, matching the existing fixed `0.25` weight already used for angle/distance):
 
@@ -201,14 +201,14 @@ effPower = power * kick_power_rate * (
 
 Set `height_power_cost` to 0 to restore the old "height is free" behavior; raise it (up to 1.0) to make
 headers/volleys progressively weaker the higher the ball is. Verified numerically (same x/y/angle,
-`power=100`, `player_reach_height=2.0`, default `height_power_cost=0.25`):
+`power=100`, `player_height=2.0`, default `height_power_cost=0.25`):
 
 | ball z | height_frac | eff_power |
 |---|---|---|
 | 0    | 0.000 | 2.589 |
 | 1    | 0.500 | 2.252 |
 | 1.9  | 0.950 | 1.948 |
-| 2.01 | — | rejected (`isBallKickable()` = false, beyond `player_reach_height`) |
+| 2.01 | — | rejected (`isBallKickable()` = false, beyond `player_height`) |
 
 The kick-info readout in the UI now also shows `height_frac` alongside `dir_diff`/`dist_ball`, and a
 new slider (with `!`/`↺` buttons, same pattern as every other physics parameter) was added for
@@ -420,6 +420,6 @@ check) — no infinite oscillation or divergence introduced.
   of a realistic dead-ball settle.
 - Set an initial `vz` and `z` directly (bypassing `kick()`) to test "what
   does a header look like" without needing a second player model.
-- The kickable-area check already gates on `player_reach_height` — try
+- The kickable-area check already gates on `player_height` — try
   kicking a high ball and see the "not kickable" message, then wait for it
   to fall within reach.

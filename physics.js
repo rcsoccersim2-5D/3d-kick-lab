@@ -48,7 +48,7 @@ const DEFAULT_PARAMS = {
   // 0.15 gives a nice multi-second hang time for a hard, high-loft kick; raise it for a
   // snappier/lower arc, lower it (e.g. 0.05-0.1) for a long floaty lob.
   gravity: 0.15,
-  ball_bounce_restitution: 0.65,
+  ball_bounce_restitution: 0.5,
 
   // NEW: couples the bounce's vertical (normal) impulse to a one-time horizontal
   // (tangential) speed loss, approximating Coulomb friction (F_friction <= mu *
@@ -59,16 +59,23 @@ const DEFAULT_PARAMS = {
   // touches vx/vy at all); higher = harder bounces bleed off proportionally more
   // horizontal speed on impact, matching the physical intuition that a ball hitting
   // the ground hard loses energy on ALL axes, not just vertically.
-  ball_bounce_friction: 0.3,
+  ball_bounce_friction: 0.5,
 
   loft_power_cost: 0.4,     // fraction of power "spent" lifting the ball at 90 deg loft
   air_decay: 0.999,         // xy friction while ball is AIRBORNE (near-zero air resistance)
   bounce_stop_speed: 0.05,  // |vz| below this on a ground touch => ball settles (z=0,vz=0)
   roll_stop_speed: 0.05,    // horizontal (xy) speed below this WHILE RESTING ON GROUND => ball freezes (vx=vy=0)
-  player_height: 2.0,       // cylinder height (m) - visual + "can this player head the ball" band
 
-  player_reach_height: 2.0, // max z at which a player can play/kick an airborne ball
-  height_power_cost: 0.25,  // NEW: fraction of effPower lost as ball.z approaches player_reach_height
+  // MERGED (previously two separate params, `player_height` + `player_reach_height`,
+  // that always shared the same default 2.0 and were never meaningfully different in
+  // the UI): player_height is now BOTH the visual cylinder height (m) AND the max
+  // ball z at which the ball is still considered kickable/headable (used by
+  // isBallKickable()/heightFrac below) - i.e. "how tall the player is" now directly
+  // IS "how high they can reach", instead of two independently-tunable sliders that
+  // could drift out of sync for no physical reason.
+  player_height: 2.0,
+
+  height_power_cost: 0.25,  // NEW: fraction of effPower lost as ball.z approaches player_height
                             // (mirrors the existing 0.25 weight already used for dirDiff/distBall below —
                             // previously ball height had ZERO effect on power, only a binary reach cutoff)
 
@@ -165,7 +172,7 @@ class KickLabPhysics {
     // for an airborne ball (heading/volleying), matching the design-discussion idea:
     // "ball must also be within jump/head reach when off the ground".
     const inCircle = this.ballDistanceFromPlayer() <= this.kickableArea();
-    const inReach = this.ball.pos.z <= this.params.player_reach_height;
+    const inReach = this.ball.pos.z <= this.params.player_height;
     return inCircle && inReach;
   }
 
@@ -192,14 +199,15 @@ class KickLabPhysics {
 
     // Height penalty: how far UP the ball currently is, as a fraction of the
     // player's max reach height (0 = ball on the ground, 1 = right at the
-    // reach-height cutoff). Previously ball.z had NO effect on effPower at
-    // all — only a binary isBallKickable() cutoff at player_reach_height, so
-    // a header at head height cost exactly the same power as a grounder at
-    // the player's feet. This mirrors the existing distBall/dirDiff terms so
-    // a higher ball is now progressively harder to strike with full power,
-    // same idea as being off-angle or at the edge of kickable_margin.
-    const heightFrac = p.player_reach_height > 0
-      ? Math.max(0, this.ball.pos.z) / p.player_reach_height
+    // reach-height cutoff, which is now the SAME `player_height` param used
+    // for the visual cylinder). Previously ball.z had NO effect on effPower
+    // at all — only a binary isBallKickable() cutoff, so a header at head
+    // height cost exactly the same power as a grounder at the player's feet.
+    // This mirrors the existing distBall/dirDiff terms so a higher ball is
+    // now progressively harder to strike with full power, same idea as being
+    // off-angle or at the edge of kickable_margin.
+    const heightFrac = p.player_height > 0
+      ? Math.max(0, this.ball.pos.z) / p.player_height
       : 0;
 
     let effPower = power * p.kick_power_rate *
