@@ -5,9 +5,8 @@
  * extension formula discussed for rcssserver:
  *
  *   eff_power   = power * kick_power_rate
- *               * (1 - 0.25*dir_diff/PI - 0.25*dist_ball/kickable_margin)
- *   eff_power  *= (1 - loft_power_cost * (loft/90deg))     // loft "costs" power
- *   horiz       = eff_power * cos(loft)
+ *               * (1 - 0.25*dir_diff/PI - 0.25*dist_ball/kickable_margin - height_power_cost*height_frac)
+ *   horiz       = eff_power * cos(loft)     // pure geometric split - no axis costs extra
  *   vert        = eff_power * sin(loft)
  *   accel_xy    = polar(horiz, dir_rel + body_angle)
  *   accel_z     = vert
@@ -15,9 +14,10 @@
  * Per-cycle integration (dt seconds per cycle, default 0.1s like rcssserver):
  *   vz   += -gravity * dt
  *   pos  += vel * dt
- *   if pos.z <= 0: pos.z = 0; vz = -vz * restitution; (settle if too slow)
- *   vx,vy *= (airborne ? air_decay : ball_decay)     // xy friction, gravity handles z
+ *   if pos.z <= 0: pos.z = 0; vz = -vz; (vx,vy,vz) *= ball_bounce_restitution; (settle if too slow)
+ *   vx,vy *= (airborne ? 1 (no air friction) : ball_decay)     // xy friction only on the ground
  *
+
  * All state/formulas are intentionally kept in ONE plain object graph
  * (no framework) so they are easy to read, tweak, and port back into
  * rcssserver's C++ (object.cpp / player.cpp) later.
@@ -25,6 +25,15 @@
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
+
+// Fixed seconds-per-cycle for real-time playback pacing ONLY (main.js's
+// animate loop uses this to convert wall-clock time into "how many cycles to
+// step()"). Matches rcssserver's real 100ms/cycle. NEVER used inside the
+// physics formulas themselves (integration is purely per-cycle - see the
+// header comment above) - this is metadata, not a tunable physics constant,
+// which is why (as of 2026-07-10) it is a plain constant instead of a
+// DEFAULT_PARAMS entry with its own UI slider.
+const CYCLE_DT = 0.1;
 
 // ---- Default tunable parameters (mirrors / extends ServerParam) ----
 const DEFAULT_PARAMS = {
@@ -47,24 +56,38 @@ const DEFAULT_PARAMS = {
   // almost the entire kick's vertical velocity in one step -> the "little hop" symptom).
   // 0.15 gives a nice multi-second hang time for a hard, high-loft kick; raise it for a
   // snappier/lower arc, lower it (e.g. 0.05-0.1) for a long floaty lob.
-  gravity: 0.15,
+  gravity: 0.1,
+
+  // MERGED (previously two separate params, `ball_bounce_restitution` +
+  // `ball_bounce_friction`, that both tried to describe "how much energy a
+  // bounce removes" from two different angles - one for vz only, one as a
+  // friction coupling for vx/vy): a single coefficient now scales the BALL'S
+  // ENTIRE VELOCITY VECTOR (all three axes, using the true 3D speed
+  // sqrt(vx^2+vy^2+vz^2)) by this same factor at the instant of a ground
+  // bounce, right after vz is reflected. 1.0 = perfectly elastic bounce (no
+  // energy lost at all, on any axis); 0.0 = ball goes completely dead on
+  // first ground touch (both vz AND vx/vy zeroed). This matches simple
+  // real-world intuition - hitting the ground costs a soccer ball SOME
+  // fraction of its total kinetic energy, not just its vertical energy -
+  // and removes the need to tune two separate, overlapping sliders. Default
+  // 0.5 (was the old ball_bounce_restitution default; old ball_bounce_friction
+  // is gone entirely).
   ball_bounce_restitution: 0.5,
 
-  // NEW: couples the bounce's vertical (normal) impulse to a one-time horizontal
-  // (tangential) speed loss, approximating Coulomb friction (F_friction <= mu *
-  // F_normal) the way a real rigid-body/ODE contact solver resolves both at once
-  // (see SimSpark's ContactJointHandler `mu`). Applied ONCE per bounce event, right
-  // where vel.z is reflected - separate from (and in addition to) the continuous
-  // per-cycle ball_decay/air_decay xy friction below. 0 = old behavior (bounce never
-  // touches vx/vy at all); higher = harder bounces bleed off proportionally more
-  // horizontal speed on impact, matching the physical intuition that a ball hitting
-  // the ground hard loses energy on ALL axes, not just vertically.
-  ball_bounce_friction: 0.5,
+  // REMOVED (2026-07-10): `loft_power_cost` used to further scale down effPower
+  // based on loft angle (kicking upward "cost" extra power on top of the
+  // dirDiff/distBall/height penalties). Removed per design discussion: a kick
+  // is just a force vector of magnitude effPower pointed at (dir, loft) - the
+  // cos(loft)/sin(loft) split below is pure geometry (how that fixed-magnitude
+  // vector distributes across horizontal/vertical), not something that should
+  // cost extra power depending on which way it's aimed. No axis is privileged
+  // over another. See kick() below - horiz/vert are now derived directly from
+  // effPower with no extra multiplier.
+  bounce_stop_speed: 0.05,  // |vz| below this on a ground touch => ball settles (z=0,vz=0)
 
-  loft_power_cost: 0.4,     // fraction of power "spent" lifting the ball at 90 deg loft
-  air_decay: 0.999,         // xy friction while ball is AIRBORNE (near-zero air resistance)
   bounce_stop_speed: 0.05,  // |vz| below this on a ground touch => ball settles (z=0,vz=0)
   roll_stop_speed: 0.05,    // horizontal (xy) speed below this WHILE RESTING ON GROUND => ball freezes (vx=vy=0)
+
 
   // MERGED (previously two separate params, `player_height` + `player_reach_height`,
   // that always shared the same default 2.0 and were never meaningfully different in
@@ -79,7 +102,15 @@ const DEFAULT_PARAMS = {
                             // (mirrors the existing 0.25 weight already used for dirDiff/distBall below —
                             // previously ball height had ZERO effect on power, only a binary reach cutoff)
 
-  dt: 0.1,                  // seconds simulated per "cycle" (matches rcssserver's 100ms cycle)
+  // REMOVED (2026-07-10): `dt` used to be a tunable DEFAULT_PARAMS entry (with
+  // its own UI slider) purely for real-time playback pacing - it was NEVER
+  // used inside the physics formulas (integration is per-cycle, see header
+  // comment above), only to convert wall-clock time into "how many cycles to
+  // step()" in main.js's animate loop. Having it as a tunable param implied
+  // (incorrectly) that it affected the simulation itself. It's now a fixed
+  // module-level constant, CYCLE_DT (below), always 0.1s (rcssserver's real
+  // 100ms cycle) - no slider, no per-run variation.
+
 
   // Toggle in the lab UI to A/B test. Default is now TRUE (changed from the original
   // false/"naive" default): when true, a cycle that would carry the ball below z=0
@@ -216,11 +247,13 @@ class KickLabPhysics {
          - p.height_power_cost * heightFrac);
     effPower = Math.max(0, effPower);
 
-    // Loft costs power (your idea: kicking upward reduces available push)
-    const effPowerTotal = effPower * (1 - p.loft_power_cost * (loft / (Math.PI / 2)));
-
-    const horiz = effPowerTotal * Math.cos(loft);
-    const vert = effPowerTotal * Math.sin(loft);
+    // A kick is just a force vector of magnitude effPower pointed at (dir, loft).
+    // horiz/vert are a pure geometric split of that SAME magnitude across the
+    // horizontal/vertical axes (cos/sin) - no axis is "cheaper" or "more
+    // expensive" to aim at than another, so unlike an earlier version of this
+    // formula, loft does NOT reduce the total available power anymore.
+    const horiz = effPower * Math.cos(loft);
+    const vert = effPower * Math.sin(loft);
 
     const kickAngle = dir + this.player.bodyAngle;
     let accelX = horiz * Math.cos(kickAngle);
@@ -229,7 +262,7 @@ class KickLabPhysics {
 
     // optional small kick noise (rcssserver-style), off by default (ball_rand=0)
     if (p.ball_rand > 0) {
-      const maxRand = p.ball_rand * (power / p.max_power) * effPowerTotal;
+      const maxRand = p.ball_rand * (power / p.max_power) * effPower;
       const noiseAngle = Math.random() * Math.PI * 2;
       const noiseMag = Math.random() * maxRand;
       accelX += noiseMag * Math.cos(noiseAngle);
@@ -262,7 +295,6 @@ class KickLabPhysics {
       distBall,
       heightFrac,
       effPower,
-      effPowerTotal,
       accel: { x: accelX, y: accelY, z: accelZ },
     };
     this.events.push({ cycle: this.cycle, text: `Kick: power=${power}, dir=${dirDeg}°, loft=${loftDeg}° → accel=(${accelX.toFixed(2)},${accelY.toFixed(2)},${accelZ.toFixed(2)})` });
@@ -318,27 +350,21 @@ class KickLabPhysics {
     return Math.max(p.bounce_stop_speed, vzStar * 1.0001);
   }
 
-  // ---- Impact friction: couple the bounce's normal (vertical) impulse to a
-  // one-time horizontal (tangential) speed loss, approximating Coulomb
-  // friction (F_friction <= mu * F_normal), the way a real rigid-body
-  // solver (e.g. SimSpark/ODE's ContactJointHandler) resolves normal AND
-  // tangential impulses from the SAME contact event together instead of as
-  // two unrelated multipliers. Call this ONCE per ground-touch, right after
-  // vel.z is reflected (or zeroed on settle) — normalImpulse is how much
-  // vertical speed the bounce just absorbed (|incoming vz| - |outgoing vz|).
-  _applyBounceFriction(vzImpact, postBounceVz) {
+  // ---- Bounce energy loss: scale the ball's ENTIRE velocity vector (vx,
+  // vy, and the just-reflected vz) by the single ball_bounce_restitution
+  // coefficient, once per ground-touch event. This is a uniform "whole-speed"
+  // energy loss (matching how a real ball loses some fraction of its total
+  // kinetic energy on every bounce, not just its vertical component) - it
+  // replaces the old two-parameter model (separate vz-only restitution +
+  // a Coulomb-friction-style vx/vy coupling). Call this ONCE per ground-touch,
+  // right after vel.z has been reflected (or zeroed on settle).
+  _applyBounceEnergyLoss() {
     const p = this.params;
     const b = this.ball;
-    const normalImpulse = Math.abs(vzImpact) - Math.abs(postBounceVz);
-    if (normalImpulse <= 0 || p.ball_bounce_friction <= 0) return;
-    const speedXY = Math.hypot(b.vel.x, b.vel.y);
-    if (speedXY <= 1e-9) return;
-    const maxLoss = p.ball_bounce_friction * normalImpulse; // Coulomb cap: F_friction <= mu * F_normal
-    const loss = Math.min(maxLoss, speedXY);              // friction can't reverse the tangential velocity
-    const scale = (speedXY - loss) / speedXY;
-    b.vel.x *= scale;
-    b.vel.y *= scale;
+    b.vel.x *= p.ball_bounce_restitution;
+    b.vel.y *= p.ball_bounce_restitution;
   }
+
 
   // ---- STEP: advance the simulation by exactly one cycle ----
   //
@@ -420,7 +446,7 @@ class KickLabPhysics {
 
         const candidate = -vzImpact * p.ball_bounce_restitution;
         if (Math.abs(candidate) < settleThreshold) {
-          this._applyBounceFriction(vzImpact, 0);
+          this._applyBounceEnergyLoss();
           b.vel.z = 0;
           b.pos.z = 0;
           if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground.", impact });
@@ -447,7 +473,7 @@ class KickLabPhysics {
           // benefit of mirroring while preserving the same decay behavior
           // as the original clamp-to-zero model.
           const remaining = 1 - frac;
-          this._applyBounceFriction(vzImpact, candidate);
+          this._applyBounceEnergyLoss();
           b.vel.z = candidate;
           b.pos.z = Math.max(0, candidate * remaining - 0.5 * p.gravity * remaining * remaining);
           this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)} (mirrored mid-step)`, impact });
@@ -461,8 +487,22 @@ class KickLabPhysics {
 
 
     // ground collision / bounce (skipped if the precise-timing branch above
-    // already resolved this cycle's bounce)
-    if (!bounced && b.pos.z <= 0) {
+    // already resolved this cycle's bounce, AND skipped entirely if the ball
+    // was ALREADY resting flat before this cycle started - see `resting`
+    // above). BUG FIX (2026-07-10): without the `!resting` guard, this block
+    // used to fire on EVERY cycle a resting/rolling ball spends at pos.z<=0
+    // (not just on a genuine new impact), because a resting ball never sets
+    // `bounced=true` (that only happens in the airborne precise-timing branch,
+    // itself skipped while resting). That meant `_applyBounceEnergyLoss()` -
+    // which scales vx/vy by ball_bounce_restitution (0.5 default) - was being
+    // applied EVERY cycle to a plain rolling grounder, on top of the normal
+    // ball_decay friction, killing its speed almost instantly (a loft=0,
+    // power=100 kick stopped after ~5 cycles at x~5m instead of the expected
+    // ~40m). The old pre-merge `_applyBounceFriction()` avoided this by
+    // internally gating on `normalImpulse > 0` (zero for a resting ball,
+    // since vzImpact and postBounceVz were both 0) - that implicit guard was
+    // lost when the two params were merged into a single unconditional scale.
+    if (!resting && !bounced && b.pos.z <= 0) {
       b.pos.z = 0;
       // Check the PREDICTED post-bounce velocity against bounce_stop_speed,
       // not the incoming fall velocity. Checking the incoming velocity is
@@ -475,20 +515,23 @@ class KickLabPhysics {
       const vzImpact = b.vel.z;
       const candidate = -vzImpact * p.ball_bounce_restitution;
       if (Math.abs(candidate) < settleThreshold) {
-        this._applyBounceFriction(vzImpact, 0);
+        this._applyBounceEnergyLoss();
         b.vel.z = 0;
         if (airborne) this.events.push({ cycle: this.cycle, text: "Ball settled on ground." });
       } else {
-        this._applyBounceFriction(vzImpact, candidate);
+        this._applyBounceEnergyLoss();
         b.vel.z = candidate;
         this.events.push({ cycle: this.cycle, text: `Bounce! vz -> ${b.vel.z.toFixed(2)}` });
       }
     }
 
-    // xy friction: ground decay vs (near-zero) air decay
-    const decay = b.pos.z > 1e-6 ? p.air_decay : p.ball_decay;
-    b.vel.x *= decay;
-    b.vel.y *= decay;
+    // xy friction: ONLY applies while the ball is on the ground. No air
+    // friction at all now (air_decay param removed) - horizontal speed is
+    // perfectly conserved while airborne; gravity governs z only.
+    if (b.pos.z <= 1e-6) {
+      b.vel.x *= p.ball_decay;
+      b.vel.y *= p.ball_decay;
+    }
 
     // Ground roll-stop: once a RESTING ball's horizontal speed decays below
     // roll_stop_speed, freeze it fully (vx=vy=0) instead of continuing to
@@ -506,7 +549,7 @@ class KickLabPhysics {
     }
 
     this.cycle += 1;
-    this.time += p.dt;
+    this.time += CYCLE_DT;
     this.maxHeightReached = Math.max(this.maxHeightReached, b.pos.z);
     this.trail.push({ ...b.pos });
     if (this.trail.length > 2000) this.trail.shift();
@@ -542,7 +585,8 @@ class KickLabPhysics {
 if (typeof window !== "undefined") {
   window.KickLabPhysics = KickLabPhysics;
   window.DEFAULT_PARAMS = DEFAULT_PARAMS;
+  window.CYCLE_DT = CYCLE_DT;
 }
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { KickLabPhysics, DEFAULT_PARAMS };
+  module.exports = { KickLabPhysics, DEFAULT_PARAMS, CYCLE_DT };
 }

@@ -347,6 +347,19 @@
     $("roVel").textContent = fmtVec(sim.ball.vel);
     $("roSpeed").textContent = sim.speed().toFixed(3);
     $("roMaxH").textContent = sim.maxHeightReached.toFixed(3);
+    // Angle between the ball's velocity vector and the ground plane:
+    // atan2(vz, horizontalSpeed) - 0deg = moving flat along the ground,
+    // 90deg = moving straight up/down, negative = descending. Shown as "-"
+    // once the ball is fully at rest (both components ~0), since the angle
+    // of a zero vector is meaningless.
+    const angEl = $("roAngle");
+    const vSpeedXY = Math.hypot(sim.ball.vel.x, sim.ball.vel.y);
+    if (vSpeedXY < 1e-9 && Math.abs(sim.ball.vel.z) < 1e-9) {
+      angEl.textContent = "-";
+    } else {
+      const angleDeg = Math.atan2(sim.ball.vel.z, vSpeedXY) * (180 / Math.PI);
+      angEl.textContent = angleDeg.toFixed(1);
+    }
     const kEl = $("roKickable");
     const kickable = sim.isBallKickable();
     kEl.textContent = "Kickable: " + (kickable ? "YES" : "no");
@@ -472,7 +485,7 @@
     if (info.ok) {
       $("kickInfo").innerHTML =
         `dir_diff=${info.dirDiffDeg.toFixed(1)}°, dist_ball=${info.distBall.toFixed(3)}, height_frac=${info.heightFrac.toFixed(3)}, ` +
-        `eff_power=${info.effPower.toFixed(3)}, eff_power(loft-adj)=${info.effPowerTotal.toFixed(3)}<br/>` +
+        `eff_power=${info.effPower.toFixed(3)}<br/>` +
         `accel = (${info.accel.x.toFixed(2)}, ${info.accel.y.toFixed(2)}, ${info.accel.z.toFixed(2)})`;
     } else {
       $("kickInfo").textContent = info.reason;
@@ -748,10 +761,10 @@
   const DESCRIPTIONS = {
     power: "Kick strength you command (0-100), same as rcssserver's kick power. Goes into eff_power = power * kick_power_rate * (alignment/distance penalties). Higher power -> larger eff_power -> both the horizontal AND vertical exit speed scale up together (split by loft below). Does NOT by itself change direction or arc shape.",
     dir: "Kick direction in degrees, RELATIVE to the player's body facing (0 = straight ahead, matches rcssserver's body-relative 'dir' convention). Only rotates the horizontal (x,y) direction of the kick - has no effect on loft/height or on speed.",
-    loft: "Elevation angle of the kick: 0 deg = pure grounder (identical to today's rcssserver kick), 90 deg = straight up. eff_power is split into horiz=cos(loft), vert=sin(loft), AND loft itself costs extra power via loft_power_cost (a big lob 'spends' more of the kick's total power just lifting the ball). Higher loft -> higher arc but shorter horizontal distance.",
+    loft: "Elevation angle of the kick: 0 deg = pure grounder (identical to today's rcssserver kick), 90 deg = straight up. eff_power is split purely geometrically into horiz=eff_power*cos(loft), vert=eff_power*sin(loft) - the total kick magnitude stays the SAME regardless of loft (no axis costs extra power to aim at; removed the old loft_power_cost penalty). Higher loft -> higher arc but shorter horizontal distance, simply because more of the SAME total power is redirected into vert instead of horiz.",
 
     ball_size: "Ball radius (rcssserver's ball_size, default 0.085). Used in the kickable-area formula (player_size+ball_size+kickable_margin) and purely visual sphere size - does not affect flight physics directly.",
-    ball_decay: "Per-cycle horizontal (x,y) speed multiplier while the ball is ON THE GROUND (rcssserver's ball_decay, default 0.94). Lower = more friction/rolls to a stop faster. Does NOT affect vertical motion or airborne speed - see air_decay for that.",
+    ball_decay: "Per-cycle horizontal (x,y) speed multiplier while the ball is ON THE GROUND (rcssserver's ball_decay, default 0.94). Lower = more friction/rolls to a stop faster. Does NOT affect vertical motion; while the ball is AIRBORNE there is no horizontal friction at all - speed is fully conserved until it touches down.",
     ball_rand: "Random noise magnitude added to a kick's direction/power (rcssserver's ball_rand). 0 = fully deterministic kicks (recommended while tuning formulas in this lab); >0 reintroduces the server's real kick randomness.",
     ball_speed_max: "Hard cap on horizontal (x,y) speed after a kick (rcssserver's ball_speed_max, default 3.0 units/cycle). Vertical (z) speed from loft is NOT clamped by this - only the horizontal component is.",
     ball_accel_max: "Hard cap on the horizontal (x,y) acceleration a single kick can apply (rcssserver's ball_accel_max, default 2.7). Prevents unrealistic instantaneous horizontal speed jumps; vertical (z) acceleration from loft is not clamped by this.",
@@ -760,15 +773,11 @@
     kickable_margin: "Extra reach beyond player_size+ball_size within which the ball is still kickable (rcssserver's kickable_margin, default 0.7). Also appears in the eff_power formula: kicking a ball near the edge of this margin loses power vs. one right at your feet.",
     max_power: "Maximum power value NormalizeKickPower will allow (rcssserver's max_power, default 100). Raising it lets the power slider itself go higher, effectively raising the ceiling on eff_power.",
     gravity: "NEW parameter (not in rcssserver): per-cycle vertical speed lost each step (same unit scale as the kick's vz, NOT real-world 9.8 m/s^2 - see README). Lower = long floaty lob with more hang time; higher = snappier, lower arc that falls fast. Setting this too high (e.g. near 9.8) reproduces the 'ball barely leaves the ground' bug.",
-    ball_bounce_restitution: "NEW parameter: fraction of vertical speed kept after each ground bounce (0 = dead stop on first touch, close to 1 = super bouncy). Applied every time the ball's z crosses back to 0 with |vz| above bounce_stop_speed. Default 0.5.",
-    ball_bounce_friction: "NEW parameter: couples the bounce's vertical (normal) impulse to a one-time horizontal (x,y) speed LOSS at the instant of impact, approximating real Coulomb friction - inspired by how SimSpark/ODE resolve a bounce as one coupled normal+tangential impulse instead of two independent axes. maxLoss = ball_bounce_friction * (impact vz - post-bounce vz); the ball's horizontal speed is scaled down by at most that much (never reversed). 0 = old behavior (bounce never touches vx/vy, only ball_decay/air_decay slow it down over time); higher = a harder bounce bleeds off proportionally more horizontal speed on that single impact, matching the intuition that hitting the ground harder should cost you more total energy, not just vertical energy. Default 0.5.",
-    loft_power_cost: "NEW parameter: fraction of eff_power 'spent' purely on lifting the ball, scaled by loft/90deg. At loft=90 with loft_power_cost=0.4, you only keep 60% of eff_power total. Raise it to make big lobs cost noticeably more power than grounders; set to 0 to make loft 'free' (same total power regardless of angle).",
-    air_decay: "NEW parameter: per-cycle horizontal (x,y) speed multiplier while the ball is AIRBORNE (z>0), separate from ball_decay which only applies on the ground. Kept close to 1.0 (near-frictionless) by default since air resistance on a soccer ball is small - lower it to simulate more drag on a flying ball.",
+    ball_bounce_restitution: "NEW parameter (MERGED, previously two separate params ball_bounce_restitution + ball_bounce_friction): a single coefficient scaling the ball's ENTIRE velocity (vx, vy, AND the just-reflected vz) every time it hits the ground - 0 = ball goes completely dead on first touch (all axes), close to 1 = super bouncy with almost no energy lost on any axis. This models a bounce as one uniform 'whole-speed' kinetic-energy loss instead of two independently-tuned axes. Default 0.5.",
     bounce_stop_speed: "NEW parameter: once a ground-touch's vertical speed magnitude drops below this threshold, the ball 'settles' (z locked to 0, vz set to 0) instead of bouncing again forever. Raise it to make the ball stop bouncing sooner/more abruptly.",
     roll_stop_speed: "NEW parameter: once a ball RESTING on the ground (already settled, vz=0) has its horizontal (x,y) speed decay below this threshold, it freezes completely (vx=vy=0) instead of creeping forever at a near-zero crawl. Separate from bounce_stop_speed, which only governs the vertical bounce->settle transition. Raise it to make rolling balls stop sooner/more abruptly; lower it to let them creep longer before fully stopping.",
     player_height: "MERGED parameter (previously two separate sliders, player_height + player_reach_height, that always shared the same default 2.0): visual height of the player cylinder (meters) AND the maximum ball z at which the ball is still considered kickable/headable (used in isBallKickable() alongside the normal 2D kickable-circle test). Lower it to simulate both 'a shorter player' and 'the ball flew over their head, they can't reach it' at once.",
     height_power_cost: "NEW parameter: fraction of eff_power lost as the ball's height approaches player_height (0 = ball on the ground costs nothing extra, 1 = a ball right at the reach-height cutoff loses ALL power). Mirrors the existing angle/distance power penalties - previously ball height had NO effect on kick power at all, only a binary reach cutoff. Set to 0 to make height free again (old behavior); raise it to make headers/volleys noticeably weaker than grounders.",
-    dt: "Seconds represented by ONE simulation cycle (rcssserver's cycle = 0.1s = 100ms, matched here by default). Only affects real-time playback pacing (how fast Play advances cycles per wall-clock second) - it is NOT used inside the physics formulas themselves (pos/vel integration is purely per-cycle, matching rcssserver's own convention).",
     precise_bounce_timing: "Bounce-timing mode. ON (default): step() finds the exact fractional point within the cycle where z actually crosses 0 (linear interpolation), bounces the velocity there, then continues moving for the REMAINING fraction of the cycle with the reflected velocity - like mirroring the tail of the fall back upward instead of chopping it off. This is a continuous/analytical time-of-impact scheme, the same style rcssserver itself uses for its own ball-vs-goalpost collision (see compare.md). OFF (legacy/experimental): a cycle that would carry the ball below z=0 just clamps pos.z straight to 0 and bounces from there, discarding whatever fraction of that cycle's fall happened after the true ground-crossing instant - kept only as an A/B comparison toggle against the old default behavior. Turn this on/off and compare trajectories (especially at low gravity / large per-cycle falls) to see how much bounce placement shifts.",
   };
 
@@ -842,15 +851,12 @@
     max_power:               [50, 150, 1],
     gravity:                 [0.02, 2.0, 0.01],
     ball_bounce_restitution: [0.0, 0.95, 0.01],
-    ball_bounce_friction:      [0.0, 1.0, 0.01],
-    loft_power_cost:         [0.0, 0.9, 0.01],
-    air_decay:               [0.90, 1.0, 0.001],
     bounce_stop_speed:       [0.0, 0.5, 0.01],
     roll_stop_speed:         [0.0, 0.5, 0.01],
     player_height:           [0.5, 2.5, 0.05],
     height_power_cost:       [0.0, 1.0, 0.01],
-    dt:                      [0.02, 0.5, 0.01],
   };
+
 
   const sliderHost = $("paramSliders");
 
@@ -977,7 +983,7 @@
       const dtWall = (nowMs - lastWall) / 1000;
       lastWall = nowMs;
       accum += dtWall * speed;
-      const cycleDt = sim.params.dt; // dt is ONLY used to pace real-time playback (cycles per wall-second), not inside physics
+      const cycleDt = CYCLE_DT; // fixed 0.1s/cycle constant (physics.js) - ONLY paces real-time playback, never used inside physics itself
       let guard = 0;
       while (accum >= cycleDt && guard < 50) {
         sim.step();

@@ -5,6 +5,15 @@ height" (3D kick / gravity / bounce) extension discussed for `rcssserver`.
 Pure HTML + vanilla JS + Three.js (loaded from CDN) — just open `index.html`,
 no npm/webpack/React required.
 
+> **Formula simplified 2026-07-10** — see [CHANGELOG_2026-07-10.md](CHANGELOG_2026-07-10.md)
+> for a short summary of every param that was merged/removed and why
+> (`ball_bounce_friction` merged into `ball_bounce_restitution`, `air_decay`
+> and `loft_power_cost` removed entirely, `dt` is now a fixed constant, a
+> resting-ball bounce-friction bug was fixed, and `gravity`'s default changed).
+> Some of the historical sections further down this README describe the
+> OLDER multi-parameter model and are kept for context/history — the
+> "Current physics model" section right below is up to date.
+
 ## How to run
 
 **Easiest:** double-click [index.html](index.html) to open it directly in a
@@ -33,15 +42,17 @@ py -m http.server 8000
   **and** within `player_height` (so you can't "kick" a ball flying
   10m over your head) — mirrors the design discussion's height-gated
   kickable-area idea.
-- **Playback**: **Step** advances exactly one physics cycle (`dt` seconds,
-  default 0.1s, same cadence as rcssserver's 100ms cycle) so you can inspect
-  frame-by-frame what a kick does. **Play/Pause** runs continuously at an
-  adjustable speed multiplier. **Reset** puts the ball back to its
-  configured initial state.
+- **Playback**: **Step** advances exactly one physics cycle (a fixed
+  `CYCLE_DT = 0.1s` constant in [physics.js](physics.js), same cadence as
+  rcssserver's 100ms cycle — no longer a tunable slider, since it only
+  paces real-time playback and was never used inside the physics itself)
+  so you can inspect frame-by-frame what a kick does. **Play/Pause** runs
+  continuously at an adjustable speed multiplier. **Reset** puts the ball
+  back to its configured initial state.
 - **Trail**: a fading yellow line traces the ball's last ~600 positions so
   you can see the arc shape at a glance.
 
-## The physics model (see [physics.js](physics.js) for the exact code)
+## The physics model (see [physics.js](physics.js) for the exact code)## Current physics model (see [physics.js](physics.js) for the exact code)
 
 This directly extends the formula found in rcssserver's
 `Player::kick()` ([player.cpp](../rcssserver/src/player.cpp)) and
@@ -51,33 +62,39 @@ This directly extends the formula found in rcssserver's
 dir_diff   = angle between player's facing and the ball
 dist_ball  = edge-to-edge gap between player and ball
 eff_power  = power * kick_power_rate
-           * (1 - 0.25*dir_diff/pi - 0.25*dist_ball/kickable_margin)
-eff_power *= (1 - loft_power_cost * (loft/90deg))     // NEW: loft costs power
+           * (1 - 0.25*dir_diff/pi - 0.25*dist_ball/kickable_margin
+                - height_power_cost*height_frac)
 
+# pure geometric split - NO extra power cost for loft angle (loft_power_cost
+# was removed 2026-07-10): a kick is a fixed-magnitude force vector, no axis
+# is "more expensive" to aim at than another.
 accel_xy   = polar(eff_power * cos(loft), dir + body_angle)
-accel_z    = eff_power * sin(loft)                     // NEW
+accel_z    = eff_power * sin(loft)
 
-# per-cycle integration:
-vz  += -gravity * dt
-pos += vel * dt
-if pos.z <= 0:                                          # NEW: bounce (see precise_bounce_timing below
-                                                          # for the exact-crossing variant, now default)
+# per-cycle integration (CYCLE_DT=0.1s is metadata for playback pacing ONLY,
+# never multiplied into the physics itself):
+vz  += -gravity                                    # gravity skipped while resting
+pos += vel
+if pos.z <= 0:                                      # bounce (precise_bounce_timing finds
+                                                     # the exact crossing instant, default ON)
     pos.z = 0
-    vzImpact = vz
-    vz = -vz * restitution
-    applyBounceFriction(vzImpact, vz)                    # NEW: couples the bounce's vertical impulse
-                                                          # to a one-time vx,vy loss (ball_bounce_friction)
-vx,vy *= (airborne ? air_decay : ball_decay)             # xy friction unchanged on the ground,
-                                                          # ~frictionless while airborne
+    vz = -vz                                        # reflect
+    (vx, vy, vz) *= ball_bounce_restitution          # single coefficient scales the WHOLE
+                                                      # velocity vector - one uniform energy
+                                                      # loss across all 3 axes, applied ONLY
+                                                      # on a genuine new impact (never while
+                                                      # already resting - see bug fix below)
+vx,vy *= (airborne ? 1 (no friction) : ball_decay)   # xy friction ONLY on the ground;
+                                                      # air_decay was removed - horizontal
+                                                      # speed is fully conserved while airborne
 ```
 
-All parameters (`gravity`, `ball_bounce_restitution`, `ball_bounce_friction`,
-`loft_power_cost`, `air_decay`, `player_height`, plus every existing
-`ServerParam`-style constant) are live sliders in the right-hand panel — this
-is meant as a tuning lab: change one constant, Step/Play, watch the arc,
-repeat.
+All parameters (`gravity`, `ball_bounce_restitution`, `player_height`,
+`height_power_cost`, plus every existing `ServerParam`-style constant) are
+live sliders in the right-hand panel — this is meant as a tuning lab: change
+one constant, Step/Play, watch the arc, repeat.
 
-## New parameters compared to rcssserver (the 2D server)
+## New parameters compared to rcssserver (the 2D server)## New parameters compared to rcssserver (the 2D server)
 
 Everything rcssserver already has (`ball_decay`, `kick_power_rate`,
 `kickable_margin`, `ball_speed_max`, `ball_accel_max`, `ball_size`,
@@ -87,17 +104,20 @@ Plain-language explanation of each one:
 
 | Parameter | What it means, in simple terms |
 |---|---|
-| `loft` | How high you aim the kick (0-90°). `0` = a normal flat kick, just like today's server. `90` = straight up in the air. |
-| `gravity` | How fast the ball falls back down. Lower = the ball hangs in the air longer (a floaty lob). Higher = it drops quickly. |
-| `ball_bounce_restitution` | How "bouncy" the ball is. `0` = it just goes dead on the first touch. Close to `1` = it keeps bouncing almost as high as before. Default `0.5` (was `0.65`). |
-| `ball_bounce_friction` | When the ball hits the ground hard, it now also loses a bit of its sideways speed (not just its up/down speed) — like a real ball would. Higher = a harder bounce slows the ball down sideways more. `0` = bounces never affect sideways speed at all (the old behavior). Default `0.5` (was `0.3`). |
-| `loft_power_cost` | Kicking the ball high up "costs" some of your kick's power — so a big lob doesn't travel as far sideways as a flat kick with the same power. |
-| `air_decay` | How much the ball slows down sideways while it's flying through the air. Kept very close to `1` (almost no slowdown), since air barely affects a soccer ball. |
+| `loft` | How high you aim the kick (0-90°). `0` = a normal flat kick, just like today's server. `90` = straight up in the air. Does NOT cost any extra power to aim higher — see `loft_power_cost` removal below. |
+| `gravity` | How fast the ball falls back down. Lower = the ball hangs in the air longer (a floaty lob). Higher = it drops quickly. Default **`0.1`** (was `0.15`, was `9.8` originally — the real bug fix). |
+| `ball_bounce_restitution` | How "bouncy" the ball is, applied to the ball's ENTIRE velocity (up/down AND sideways together, as one uniform energy loss) every time it hits the ground. `0` = dead stop on first touch. Close to `1` = keeps bouncing almost as high/fast as before. Default `0.5`. **(Merged 2026-07-10 with the old separate `ball_bounce_friction` param — see [CHANGELOG_2026-07-10.md](CHANGELOG_2026-07-10.md).)** |
 | `bounce_stop_speed` | Once the ball's bounces get small/slow enough, it just stops bouncing and settles flat on the ground instead of bouncing forever in tinier and tinier hops. |
 | `roll_stop_speed` | Once a ball rolling on the ground gets slow enough, it just stops completely instead of creeping along forever at a crawl. |
 | `player_height` | How tall the player is (visual cylinder height) **and** how high up they can still reach the ball (merged from a former separate `player_reach_height` param — the two always shared the same default, so they're now one slider). A ball flying above this height is "too high" — the player can't kick/head it. |
 | `height_power_cost` | Kicking a ball that's already up in the air (like a header) costs a bit more power than kicking the same ball on the ground. |
 | `precise_bounce_timing` | A toggle for *how* the bounce is calculated. **ON (default)**: finds the exact instant the ball touches the ground for a smooth, accurate bounce. **OFF**: an older, simpler method kept only so you can compare the two. |
+
+**Removed (2026-07-10)** — see [CHANGELOG_2026-07-10.md](CHANGELOG_2026-07-10.md) for details:
+- `ball_bounce_friction` — merged into `ball_bounce_restitution` above (one coefficient now scales the whole velocity vector instead of two separate axis-specific ones).
+- `air_decay` — removed entirely; there is now simply NO horizontal friction while the ball is airborne (only `ball_decay` on the ground).
+- `loft_power_cost` — removed entirely; aiming higher no longer costs extra kick power, only redirects the same total power from horizontal into vertical.
+- `dt` — no longer a tunable parameter; it's a fixed `CYCLE_DT=0.1` constant in [physics.js](physics.js), since it only paced real-time playback and was never used inside the physics formulas.
 
 All of these live in `DEFAULT_PARAMS` in [physics.js](physics.js) and have
 their own slider + "!" info button in the app if you want the full technical
@@ -316,12 +336,15 @@ parameters later.
 | Power | 60 | **100** |
 | Loft | 30° | **60°** |
 | Ball initial x | ~0.74 (kickable-edge distance) | **0.3** |
-| Gravity | 0.25 | **0.15** |
+| Gravity | 0.25 → 0.15 | **0.1** (as of 2026-07-10) |
 
-With these defaults, hitting **Kick** immediately now produces a strong,
-high, floaty lob (peak height ≈ 6.75m at cycle 10, verified with
-`node debug_trace.js 100 0 60 60`) — a clearer "yes, this really flies"
-demo than the previous more modest defaults.
+With the current defaults (`power=100, loft=60, gravity=0.1`), hitting
+**Kick** produces a strong, high, floaty lob — peak height ≈ 19.9m at cycle
+20, final settle distance ≈ 62.6m (verified with
+`node debug_trace.js 100 0 60 100`; heights are higher than earlier
+`gravity=0.15`-era numbers quoted elsewhere in this doc, since gravity has
+been lowered twice since this section was written and `loft_power_cost` was
+also removed, both of which increase arc height/hang-time).
 
 ## Real pitch dimensions and goal distance
 
@@ -364,6 +387,13 @@ lab-scale numbers:
   field labels, updated every rendered frame.
 
 ## Impact friction couples the bounce to horizontal speed (new `ball_bounce_friction`), and precise bounce timing is now the default
+
+> **Superseded 2026-07-10**: `ball_bounce_friction` (introduced in this
+> section) was later merged directly into `ball_bounce_restitution` — see
+> [CHANGELOG_2026-07-10.md](CHANGELOG_2026-07-10.md). This section is kept
+> for historical context on *why* the friction-coupling idea was introduced
+> in the first place; `precise_bounce_timing` defaulting to `true` is still
+> current.
 
 Previously a ground bounce only ever touched **vertical** speed
 (`ball_bounce_restitution`) — the horizontal (x,y) speed was completely
@@ -414,8 +444,10 @@ check) — no infinite oscillation or divergence introduced.
 
 ## Notes / things to try next
 
-- Set `loft_power_cost = 0` and `gravity` very low to sanity-check the
-  degenerate case (`loft=0`) exactly reproduces today's flat-ground kick.
+- Set `gravity` very low to sanity-check the degenerate case (`loft=0`)
+  exactly reproduces today's flat-ground kick (`loft_power_cost` no longer
+  exists — a `loft=0` kick was never affected by it anyway, since the old
+  penalty term was always `0` at `loft=0`).
 - Crank `ball_bounce_restitution` toward 0.9+ to see a "bouncy ball" instead
   of a realistic dead-ball settle.
 - Set an initial `vz` and `z` directly (bypassing `kick()`) to test "what
